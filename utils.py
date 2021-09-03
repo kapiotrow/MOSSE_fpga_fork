@@ -1,12 +1,26 @@
 import numpy as np
 import cv2
 
+
+def pad_img(img, padded_size):
+
+    if padded_size == 0:
+        return img
+
+    height, width = img.shape
+    assert height <= padded_size and width <= padded_size
+    result = np.zeros((padded_size, padded_size))
+    result[:height, :width] = img
+    
+    return result
+
+
 # used for linear mapping...
 def linear_mapping(img):
     return (img - img.min()) / (img.max() - img.min())
 
 # pre-processing the image...
-def pre_process(img):
+def pre_process(img, padded_size=0):
     # get the size of the img...
     height, width = img.shape
     img = np.log(img + 1)
@@ -14,6 +28,7 @@ def pre_process(img):
     # use the hanning window...
     window = window_func_2d(height, width)
     img = img * window
+    img = pad_img(img, padded_size)
 
     return img
 

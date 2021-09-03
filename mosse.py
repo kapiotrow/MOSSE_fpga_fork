@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import os
-from utils import linear_mapping, pre_process, random_warp
+from utils import linear_mapping, pre_process, random_warp, pad_img
 
 
 FFT_SIZE = 200
@@ -33,11 +33,14 @@ class mosse:
         # get the init ground truth.. [x, y, width, height]
         init_gt = cv2.selectROI('demo', init_img, False, False)
         init_gt = np.array(init_gt).astype(np.int64)
+        init_gt_w = init_gt[2]
+        init_gt_h = init_gt[3]
         # start to draw the gaussian response...
         response_map = self._get_gauss_response(init_frame, init_gt)
         # start to create the training set ...
         # get the goal..
         g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+        g = pad_img(g, FFT_SIZE)
         fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
         G = np.fft.fft2(g)
         # start to do the pre-training...
@@ -54,17 +57,20 @@ class mosse:
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
                 Hi = Ai / Bi
+                # print('Hi shape:', Hi.shape, Hi.dtype)
                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])))
+                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
                 Gi = Hi * np.fft.fft2(fi)
-                gi = linear_mapping(np.fft.ifft2(Gi))
-                # print('gi:', gi.shape)
+                gi = np.real(linear_mapping(np.fft.ifft2(Gi)))
+                # print('gi:', gi.shape, gi.dtype, type(gi))
+                # cv2.imshow('predicted gaussian', gi)
+                # cv2.waitKey(0)
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
                 # print('maxpos:', max_pos)
-                dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2)
-                dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2)
+                dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
+                dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
                 
                 # update the position...
                 pos[0] = pos[0] + dx
@@ -79,7 +85,7 @@ class mosse:
 
                 # get the current fi..
                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])))
+                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
                 # online update...
                 Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
                 Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
@@ -103,14 +109,14 @@ class mosse:
         fi = cv2.resize(init_frame, (width, height))
         # print('fi:', fi.shape, init_frame.shape, np.unique(fi-init_frame) )
         # pre-process img..
-        fi = pre_process(fi)
+        fi = pre_process(fi, padded_size=FFT_SIZE)
         Ai = G * np.conjugate(np.fft.fft2(fi))
-        Bi = np.fft.fft2(init_frame) * np.conjugate(np.fft.fft2(init_frame))
+        Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         for _ in range(self.args.num_pretrain):
             if self.args.rotate:
-                fi = pre_process(random_warp(init_frame))
+                fi = pre_process(random_warp(init_frame), padded_size=FFT_SIZE)
             else:
-                fi = pre_process(init_frame)
+                fi = pre_process(init_frame, padded_size=FFT_SIZE)
             Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
             Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         
