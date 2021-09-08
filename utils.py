@@ -41,35 +41,53 @@ def bbox_iou(box1, box2):
     return iou
 
 
-def pad_img(img, padded_size):
+def pad_img(img, padded_size, pad_type='center'):
 
     if padded_size == 0:
-        return img
+        return img, [0, 0, 0, 0]
 
     height, width = img.shape
     assert height <= padded_size and width <= padded_size
-    result = np.zeros((padded_size, padded_size))
-    result[:height, :width] = img
+
+    if pad_type == 'topleft':
+        result = np.zeros((padded_size, padded_size))
+        result[:height, :width] = img
+        padding = [0, padded_size-height, 0, padded_size-width]
+
+    elif pad_type == 'center':
+        h_diff = padded_size - height
+        w_diff = padded_size - width
+        if h_diff % 2 == 0:
+            top_pad = h_diff / 2
+            bottom_pad = top_pad
+        else:
+            top_pad = h_diff // 2
+            bottom_pad = top_pad + 1
+        
+        if w_diff % 2 == 0:
+            left_pad = w_diff / 2
+            right_pad = left_pad
+        else:
+            left_pad = w_diff // 2
+            right_pad = left_pad + 1
+
+        padding = [top_pad, bottom_pad, left_pad, right_pad]
+        padding = [int(pad) for pad in padding]
+        top_pad, bottom_pad, left_pad, right_pad = padding
+        # print('padding:', padding)
+        result = cv2.copyMakeBorder(img, top_pad, bottom_pad, left_pad, right_pad, cv2.BORDER_CONSTANT)
     
-    return result
+    # cv2.imshow('padded', result.astype(np.uint8))
+    # print(result)
+
+    return result, padding
 
 
 # used for linear mapping...
 def linear_mapping(img):
     return (img - img.min()) / (img.max() - img.min())
 
-# pre-processing the image...
-def pre_process(img, padded_size=0):
-    # get the size of the img...
-    height, width = img.shape
-    img = np.log(img + 1)
-    img = (img - np.mean(img)) / (np.std(img) + 1e-5)
-    # use the hanning window...
-    window = window_func_2d(height, width)
-    img = img * window
-    img = pad_img(img, padded_size)
 
-    return img
 
 def window_func_2d(height, width):
     win_col = np.hanning(width)

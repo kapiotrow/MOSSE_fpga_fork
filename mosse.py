@@ -4,10 +4,10 @@ import os
 from os.path import join
 
 
-from utils import linear_mapping, pre_process, random_warp, pad_img, load_gt
+from utils import linear_mapping, random_warp, pad_img, load_gt, window_func_2d
 
 
-FFT_SIZE = 0
+FFT_SIZE = 200
 
 
 """
@@ -27,101 +27,144 @@ class mosse:
         # get the img lists...
         self.frame_lists = self._get_img_lists(self.img_path)
         self.frame_lists.sort()
-    
+        self.pad_type = 'topleft'
+ 
 
-    def track_sequence(self):
-        results = []
-        gt_boxes = load_gt(join(self.sequence_path, 'groundtruth_rect.txt'), delimiter='\t')
-        # get the image of the first frame... (read as gray scale image...)
-        init_img = cv2.imread(self.frame_lists[0])
-        init_frame = cv2.cvtColor(init_img, cv2.COLOR_BGR2GRAY)
-        init_frame = init_frame.astype(np.float32)
-        # get the init ground truth.. [x, y, width, height]
-        init_gt = gt_boxes[0]
-        init_gt = np.array(init_gt).astype(np.int64)
-        init_gt_w = init_gt[2]
-        init_gt_h = init_gt[3]
-        # start to draw the gaussian response...
-        response_map = self._get_gauss_response(init_frame, init_gt)
-        # start to create the training set ...
-        # get the goal..
-        g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        g = pad_img(g, FFT_SIZE)
-        fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        G = np.fft.fft2(g)
-        # start to do the pre-training...
-        Ai, Bi = self._pre_training(fi, G)
-        # start the tracking...
-        for idx in range(len(self.frame_lists)):
-            current_frame = cv2.imread(self.frame_lists[idx])
-            frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-            frame_gray = frame_gray.astype(np.float32)
-            if idx == 0:
-                Ai = self.args.lr * Ai
-                Bi = self.args.lr * Bi
-                pos = init_gt.copy()
-                clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
-            else:
-                Hi = Ai / Bi
-                # print('Hi shape:', Hi.shape, Hi.dtype)
-                fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
-                Gi = Hi * np.fft.fft2(fi)
-                gi = np.real(linear_mapping(np.fft.ifft2(Gi)))
-                # print('gi:', gi.shape, gi.dtype, type(gi))
-                # cv2.imshow('predicted gaussian', gi)
-                # cv2.waitKey(0)
-                # find the max pos...
-                max_value = np.max(gi)
-                max_pos = np.where(gi == max_value)
-                # print('maxpos:', max_pos)
-                dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
-                dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
+    # def track_sequence(self):
+    #     results = []
+    #     gt_boxes = load_gt(join(self.sequence_path, 'groundtruth_rect.txt'), delimiter='\t')
+    #     # get the image of the first frame... (read as gray scale image...)
+    #     init_img = cv2.imread(self.frame_lists[0])
+    #     init_frame = cv2.cvtColor(init_img, cv2.COLOR_BGR2GRAY)
+    #     init_frame = init_frame.astype(np.float32)
+    #     # get the init ground truth.. [x, y, width, height]
+    #     init_gt = gt_boxes[0]
+    #     init_gt = np.array(init_gt).astype(np.int64)
+    #     init_gt_w = init_gt[2]
+    #     init_gt_h = init_gt[3]
+    #     # start to draw the gaussian response...
+    #     response_map = self._get_gauss_response(init_frame, init_gt)
+    #     # start to create the training set ...
+    #     # get the goal..
+    #     g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+    #     g, padding = pad_img(g, FFT_SIZE)
+    #     G = np.fft.fft2(g)
+    #     fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+    #     # start to do the pre-training...
+    #     Ai, Bi = self._pre_training(fi, G)
+    #     # start the tracking...
+    #     for idx in range(len(self.frame_lists)):
+    #         current_frame = cv2.imread(self.frame_lists[idx])
+    #         frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+    #         frame_gray = frame_gray.astype(np.float32)
+    #         if idx == 0:
+    #             Ai = self.args.lr * Ai
+    #             Bi = self.args.lr * Bi
+    #             pos = init_gt.copy()
+    #             clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
+    #         else:
+    #             Hi = Ai / Bi
+    #             fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+    #             fi = pre_process(fi, padded_size=FFT_SIZE)
+    #             # fi = self.crop_search_window(clip_pos, frame_gray, FFT_SIZE)
+    #             # cv2.imshow('search window', fi.astype(np.uint8))
+    #             # fi = pre_process(fi)
+    #             Gi = Hi * np.fft.fft2(fi)
+    #             gi = np.real(linear_mapping(np.fft.ifft2(Gi)))
+    #             # find the max pos...
+    #             max_value = np.max(gi)
+    #             max_pos = np.where(gi == max_value)
+    #             # print('maxpos:', max_pos)
+    #             # dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2)
+    #             # dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2)
+    #             dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
+    #             dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
                 
-                # update the position...
-                pos[0] = pos[0] + dx
-                pos[1] = pos[1] + dy
+    #             # update the position...
+    #             pos[0] = pos[0] + dx
+    #             pos[1] = pos[1] + dy
 
-                # trying to get the clipped position [xmin, ymin, xmax, ymax]
-                clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
-                clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
-                clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
-                clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
-                clip_pos = clip_pos.astype(np.int64)
+    #             # trying to get the clipped position [xmin, ymin, xmax, ymax]
+    #             clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
+    #             clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
+    #             clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
+    #             clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
+    #             clip_pos = clip_pos.astype(np.int64)
 
-                # get the current fi..
-                fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
-                # online update...
-                Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
-                Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
+    #             # get the current fi..
+    #             fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+    #             fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
+    #             # online update...
+    #             Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
+    #             Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
             
-            results.append(pos.copy())
-            # cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
-            # cv2.imshow('demo', current_frame)
-            # if cv2.waitKey(0) == ord('q'):
-            #     break
-        return results
+    #         results.append(pos.copy())
+    #         cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
+    #         cv2.imshow('demo', current_frame)
+    #         if cv2.waitKey(0) == ord('q'):
+    #             break
+    #     return results
+
+
+    #bbox: [xmin, ymin, xmax, ymax]
+    def crop_search_window(self, bbox, frame, size):
+        if size != 0:
+            xmin, ymin, xmax, ymax = bbox
+            xdiff = size - xmax + xmin
+            ydiff = size - ymax + ymin
+            # print('diffs:', xdiff, ydiff)
+            win_xmin = xmin - xdiff // 2
+            win_xmax = xmax + xdiff // 2
+            if xdiff % 2 != 0:
+                win_xmax += 1
+            win_ymin = ymin - ydiff // 2
+            win_ymax = ymax + ydiff // 2
+            if ydiff % 2 != 0:
+                win_ymax += 1
+
+            # print('window:', win_xmin, win_xmax, win_ymin, win_ymax)
+            # to padded frame coordinates:
+            win_xmin += size
+            win_xmax += size
+            win_ymin += size
+            win_ymax += size
+
+            padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
+            # cv2.imshow('padded frame', padded_frame.astype(np.uint8))
+            window = padded_frame[win_ymin : win_ymax, win_xmin : win_xmax]
+            # print('window shape:', window.shape)
+        else:
+            window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
+        cv2.imshow('search window', window.astype(np.uint8))
+        window = self.pre_process(window)
+
+        return window
 
 
     # start to do the object tracking...
     def start_tracking(self):
         # get the image of the first frame... (read as gray scale image...)
+        gt_boxes = load_gt(join(self.sequence_path, 'groundtruth_rect.txt'), delimiter='\t')
         init_img = cv2.imread(self.frame_lists[0])
         init_frame = cv2.cvtColor(init_img, cv2.COLOR_BGR2GRAY)
         init_frame = init_frame.astype(np.float32)
         # get the init ground truth.. [x, y, width, height]
-        init_gt = cv2.selectROI('demo', init_img, False, False)
+        # init_gt = cv2.selectROI('demo', init_img, False, False)
+        init_gt = gt_boxes[0]
         init_gt = np.array(init_gt).astype(np.int64)
-        init_gt_w = init_gt[2]
-        init_gt_h = init_gt[3]
+        init_gt[2] -= init_gt[2] % 2
+        init_gt[3] -= init_gt[3] % 2
+        # init_gt_w = init_gt[2]
+        # init_gt_h = init_gt[3]
         # start to draw the gaussian response...
         response_map = self._get_gauss_response(init_frame, init_gt)
         # start to create the training set ...
         # get the goal..
         g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        g = pad_img(g, FFT_SIZE)
+        g, _ = pad_img(g, FFT_SIZE, pad_type=self.pad_type)
         fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+        # print('fi:', fi.shape, init_gt)
+        cv2.imshow('goal', g)
         G = np.fft.fft2(g)
         # start to do the pre-training...
         Ai, Bi = self._pre_training(fi, G)
@@ -138,10 +181,12 @@ class mosse:
             else:
                 Hi = Ai / Bi
                 # print('Hi shape:', Hi.shape, Hi.dtype)
-                fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
+                # fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+                # fi = self.pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
+                fi = self.crop_search_window(clip_pos, frame_gray, FFT_SIZE)
                 Gi = Hi * np.fft.fft2(fi)
                 gi = np.real(linear_mapping(np.fft.ifft2(Gi)))
+                cv2.imshow('response', (gi*255).astype(np.uint8))
                 # print('gi:', gi.shape, gi.dtype, type(gi))
                 # cv2.imshow('predicted gaussian', gi)
                 # cv2.waitKey(0)
@@ -149,8 +194,14 @@ class mosse:
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
                 # print('maxpos:', max_pos)
-                dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
-                dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
+                # if self.pad_type == 'topleft':
+                #     dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
+                #     dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
+                # elif self.pad_type == 'center':
+                dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2)
+                dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2)
+
+                # print(dx, dy)
                 
                 # update the position...
                 pos[0] = pos[0] + dx
@@ -165,7 +216,7 @@ class mosse:
 
                 # get the current fi..
                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
+                fi = self.pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
                 # online update...
                 Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
                 Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
@@ -173,7 +224,7 @@ class mosse:
             # visualize the tracking process...
             cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
             cv2.imshow('demo', current_frame)
-            if cv2.waitKey(100) == ord('q'):
+            if cv2.waitKey(0) == ord('q'):
                 break
             # if record... save the frames..
             if self.args.record:
@@ -185,22 +236,41 @@ class mosse:
 
     # pre train the filter on the first frame...
     def _pre_training(self, init_frame, G):
-        height, width = G.shape
-        fi = cv2.resize(init_frame, (width, height))
+        # height, width = G.shape
+        # fi = cv2.resize(init_frame, (width, height))
         # print('fi:', fi.shape, init_frame.shape, np.unique(fi-init_frame) )
+        fi = init_frame
         # pre-process img..
-        fi = pre_process(fi, padded_size=FFT_SIZE)
+        fi = self.pre_process(fi, padded_size=FFT_SIZE)
         Ai = G * np.conjugate(np.fft.fft2(fi))
         Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         for _ in range(self.args.num_pretrain):
             if self.args.rotate:
-                fi = pre_process(random_warp(init_frame), padded_size=FFT_SIZE)
+                fi = self.pre_process(random_warp(init_frame), padded_size=FFT_SIZE)
             else:
-                fi = pre_process(init_frame, padded_size=FFT_SIZE)
+                fi = self.pre_process(init_frame, padded_size=FFT_SIZE)
             Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
             Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         
         return Ai, Bi
+
+
+    # pre-processing the image...
+    def pre_process(self, img, padded_size=0):
+        # get the size of the img...
+        xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
+        cv2.imshow('padded', xd.astype(np.uint8))
+
+        height, width = img.shape
+        img = np.log(img + 1)
+        img = (img - np.mean(img)) / (np.std(img) + 1e-5)
+        # use the hanning window...
+        window = window_func_2d(height, width)
+        img = img * window
+        img, _ = pad_img(img, padded_size, pad_type=self.pad_type)
+
+        return img
+
 
     # get the ground-truth gaussian reponse...
     def _get_gauss_response(self, img, gt):
