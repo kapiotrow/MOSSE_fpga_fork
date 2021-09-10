@@ -28,6 +28,7 @@ class mosse:
         self.frame_lists = self._get_img_lists(self.img_path)
         self.frame_lists.sort()
         self.pad_type = 'topleft'
+        self.big_search_window = True
  
 
     # def track_sequence(self):
@@ -143,8 +144,9 @@ class mosse:
 
     # start to do the object tracking...
     def start_tracking(self):
+        results = []
         # get the image of the first frame... (read as gray scale image...)
-        gt_boxes = load_gt(join(self.sequence_path, 'groundtruth_rect.txt'), delimiter='\t')
+        gt_boxes = load_gt(join(self.sequence_path, 'groundtruth_rect.txt'))
         init_img = cv2.imread(self.frame_lists[0])
         init_frame = cv2.cvtColor(init_img, cv2.COLOR_BGR2GRAY)
         init_frame = init_frame.astype(np.float32)
@@ -152,10 +154,10 @@ class mosse:
         # init_gt = cv2.selectROI('demo', init_img, False, False)
         init_gt = gt_boxes[0]
         init_gt = np.array(init_gt).astype(np.int64)
-        init_gt[2] -= init_gt[2] % 2
-        init_gt[3] -= init_gt[3] % 2
-        # init_gt_w = init_gt[2]
-        # init_gt_h = init_gt[3]
+        # init_gt[2] -= init_gt[2] % 2
+        # init_gt[3] -= init_gt[3] % 2
+        init_gt_w = init_gt[2]
+        init_gt_h = init_gt[3]
         # start to draw the gaussian response...
         response_map = self._get_gauss_response(init_frame, init_gt)
         # start to create the training set ...
@@ -164,7 +166,7 @@ class mosse:
         g, _ = pad_img(g, FFT_SIZE, pad_type=self.pad_type)
         fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
         # print('fi:', fi.shape, init_gt)
-        cv2.imshow('goal', g)
+        # cv2.imshow('goal', g)
         G = np.fft.fft2(g)
         # start to do the pre-training...
         Ai, Bi = self._pre_training(fi, G)
@@ -181,12 +183,14 @@ class mosse:
             else:
                 Hi = Ai / Bi
                 # print('Hi shape:', Hi.shape, Hi.dtype)
-                # fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                # fi = self.pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
-                fi = self.crop_search_window(clip_pos, frame_gray, FFT_SIZE)
+                if self.big_search_window:
+                    fi = self.crop_search_window(clip_pos, frame_gray, FFT_SIZE)
+                else:
+                    fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+                    fi = self.pre_process(fi, padded_size=FFT_SIZE)
                 Gi = Hi * np.fft.fft2(fi)
                 gi = np.real(linear_mapping(np.fft.ifft2(Gi)))
-                cv2.imshow('response', (gi*255).astype(np.uint8))
+                # cv2.imshow('response', (gi*255).astype(np.uint8))
                 # print('gi:', gi.shape, gi.dtype, type(gi))
                 # cv2.imshow('predicted gaussian', gi)
                 # cv2.waitKey(0)
@@ -195,11 +199,13 @@ class mosse:
                 max_pos = np.where(gi == max_value)
                 # print('maxpos:', max_pos)
                 # if self.pad_type == 'topleft':
-                #     dy = int(np.mean(max_pos[0]) - init_gt_h / 2)
-                #     dx = int(np.mean(max_pos[1]) - init_gt_w / 2)
                 # elif self.pad_type == 'center':
-                dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2)
-                dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2)
+                if not self.big_search_window and FFT_SIZE != 0:
+                    dy = int(np.mean(max_pos[0]) - init_gt_h / 2) if len(max_pos[0]) != 0 else 0
+                    dx = int(np.mean(max_pos[1]) - init_gt_w / 2) if len(max_pos[1]) != 0 else 0
+                else:
+                    dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2) if len(max_pos[0]) != 0 else 0
+                    dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2) if len(max_pos[1]) != 0 else 0
 
                 # print(dx, dy)
                 
@@ -216,7 +222,7 @@ class mosse:
 
                 # get the current fi..
                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                fi = self.pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])), padded_size=FFT_SIZE)
+                fi = self.pre_process(fi, padded_size=FFT_SIZE)
                 # online update...
                 Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
                 Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
@@ -227,11 +233,14 @@ class mosse:
             if cv2.waitKey(0) == ord('q'):
                 break
             # if record... save the frames..
+            results.append(pos.copy())
             if self.args.record:
                 frame_path = 'record_frames/' + self.img_path.split('/')[1] + '/'
                 if not os.path.exists(frame_path):
                     os.mkdir(frame_path)
                 cv2.imwrite(frame_path + str(idx).zfill(5) + '.png', current_frame)
+
+        return results
 
 
     # pre train the filter on the first frame...
@@ -258,8 +267,8 @@ class mosse:
     # pre-processing the image...
     def pre_process(self, img, padded_size=0):
         # get the size of the img...
-        xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
-        cv2.imshow('padded', xd.astype(np.uint8))
+        # xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
+        # cv2.imshow('padded', xd.astype(np.uint8))
 
         height, width = img.shape
         img = np.log(img + 1)

@@ -2,12 +2,17 @@ import numpy as np
 import cv2
 import torch
 
-def load_gt(gt_file, delimiter='\t'):
+def load_gt(gt_file):
 
     with open(gt_file, 'r') as file:
         lines = file.readlines()
 
-    lines = [line.split(delimiter) for line in lines]
+    delimiters = [',', '\t']
+
+    for d in delimiters:
+        if d in lines[0]:
+            lines = [line.split(d) for line in lines]
+            break
     lines = [[int(coord) for coord in line] for line in lines]
 
     return lines
