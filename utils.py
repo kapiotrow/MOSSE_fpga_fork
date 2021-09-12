@@ -2,6 +2,21 @@ import numpy as np
 import cv2
 import torch
 
+
+# pre-processing the image... DEPRECATED
+def pre_process(img):
+    # print('USING DEPRECATED PREPROCESSING')
+    # get the size of the img...
+    height, width = img.shape
+    img = np.log(img + 1)
+    img = (img - np.mean(img)) / (np.std(img) + 1e-5)
+    # use the hanning window...
+    window = window_func_2d(height, width)
+    img = img * window
+
+    return img
+
+
 def load_gt(gt_file):
 
     with open(gt_file, 'r') as file:
@@ -13,7 +28,7 @@ def load_gt(gt_file):
         if d in lines[0]:
             lines = [line.split(d) for line in lines]
             break
-    lines = [[int(coord) for coord in line] for line in lines]
+    lines = [[int(float(coord)) for coord in line] for line in lines]
 
     return lines
 
