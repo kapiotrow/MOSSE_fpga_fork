@@ -35,7 +35,6 @@ parse.add_argument('--visualize', action='store_true', default=False)
 parse.add_argument('--seq', type=str, default='all')
 args = parse.parse_args()
 
-
 # show_VOT_dataset('../datasets/VOT2013')
 
 DATASET_DIR = '../datasets/VOT2013'
@@ -52,8 +51,8 @@ for sequence in sequences:
     imgnames = os.listdir(imgdir)                  
     imgnames.sort()
 
-    # tracker = mosse(args, seqdir, FFT_SIZE=200)
-    tracker = mosse_old(args, seqdir)
+    tracker = mosse(args, seqdir, FFT_SIZE=200)
+    # tracker = mosse_old(args, seqdir)
     results = tracker.start_tracking()
 
     gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))

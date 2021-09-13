@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import torch
+import imutils
 
 
 # pre-processing the image... DEPRECATED
@@ -122,10 +123,13 @@ def random_warp(img):
     a = -180 / 16
     b = 180 / 16
     r = a + (b - a) * np.random.uniform()
+    shape = img.shape
+    img_rot = imutils.rotate_bound(img, r)
+    img_resized = cv2.resize(img_rot, (shape[1], shape[0]))
     # rotate the image...
-    matrix_rot = cv2.getRotationMatrix2D((img.shape[1]/2, img.shape[0]/2), r, 1)
-    img_rot = cv2.warpAffine(np.uint8(img * 255), matrix_rot, (img.shape[1], img.shape[0]))
-    img_rot = img_rot.astype(np.float32) / 255
-    return img_rot
+    # matrix_rot = cv2.getRotationMatrix2D((img.shape[1]/2, img.shape[0]/2), r, 1)
+    # img_rot = cv2.warpAffine(np.uint8(img * 255), matrix_rot, (img.shape[1], img.shape[0]))
+    # img_rot = img_rot.astype(np.float32) / 255
+    return img_resized
 
 

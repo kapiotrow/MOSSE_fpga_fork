@@ -61,8 +61,7 @@ class mosse:
             # print('window shape:', window.shape)
         else:
             window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-        cv2.imshow('search window', window.astype(np.uint8))
-        window = self.pre_process(window)
+        # cv2.imshow('search window', window.astype(np.uint8))
 
         return window
 
@@ -93,12 +92,11 @@ class mosse:
         # get the goal..
         g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
         g, _ = pad_img(g, self.FFT_SIZE, pad_type=self.pad_type)
-        fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        # print('fi:', fi.shape, init_gt)
         # cv2.imshow('goal', g)
+        # cv2.waitKey(0)
         G = np.fft.fft2(g)
         # start to do the pre-training...
-        Ai, Bi = self._pre_training(fi, G)
+        Ai, Bi = self._pre_training(init_gt, init_frame, G)
         # start the tracking...
         for idx in range(len(self.frame_lists)):
             current_frame = cv2.imread(self.frame_lists[idx])
@@ -111,9 +109,9 @@ class mosse:
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
                 Hi = Ai / Bi
-                # print('Hi shape:', Hi.shape, Hi.dtype)
                 if self.big_search_window:
                     fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
+                    fi = self.pre_process(fi)
                 else:
                     fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
                     fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
@@ -126,18 +124,13 @@ class mosse:
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
-                # print('maxpos:', max_pos)
-                # if self.pad_type == 'topleft':
-                # elif self.pad_type == 'center':
-                if not self.big_search_window and self.FFT_SIZE != 0:
+                if not self.big_search_window and self.FFT_SIZE != 0 and self.pad_type == 'topleft':
                     dy = int(np.mean(max_pos[0]) - init_gt_h / 2) if len(max_pos[0]) != 0 else 0
                     dx = int(np.mean(max_pos[1]) - init_gt_w / 2) if len(max_pos[1]) != 0 else 0
                 else:
                     dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2) if len(max_pos[0]) != 0 else 0
                     dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2) if len(max_pos[1]) != 0 else 0
 
-                # print(dx, dy)
-                
                 # update the position...
                 pos[0] = pos[0] + dx
                 pos[1] = pos[1] + dy
@@ -173,20 +166,24 @@ class mosse:
 
 
     # pre train the filter on the first frame...
-    def _pre_training(self, init_frame, G):
-        # height, width = G.shape
-        # fi = cv2.resize(init_frame, (width, height))
-        # print('fi:', fi.shape, init_frame.shape, np.unique(fi-init_frame) )
-        fi = init_frame
-        # pre-process img..
-        fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
+    def _pre_training(self, init_gt, init_frame, G):
+        padded_size = self.FFT_SIZE if not self.big_search_window else 0
+
+        if self.big_search_window:
+            bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
+            template = self.crop_search_window(bbox, init_frame, self.FFT_SIZE)
+            fi = self.pre_process(template)
+        else:
+            template = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+
+        fi = self.pre_process(template, padded_size=padded_size)
         Ai = G * np.conjugate(np.fft.fft2(fi))
         Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         for _ in range(self.args.num_pretrain):
             if self.args.rotate:
-                fi = self.pre_process(random_warp(init_frame), padded_size=self.FFT_SIZE)
+                fi = self.pre_process(random_warp(template), padded_size=padded_size)
             else:
-                fi = self.pre_process(init_frame, padded_size=self.FFT_SIZE)
+                fi = self.pre_process(template, padded_size=padded_size)
             Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
             Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         
@@ -355,7 +352,8 @@ class mosse_old:
         Bi = np.fft.fft2(init_frame) * np.conjugate(np.fft.fft2(init_frame))
         for _ in range(self.args.num_pretrain):
             if self.args.rotate:
-                fi = pre_process(random_warp(init_frame))
+                warp = random_warp(init_frame)
+                fi = pre_process(warp)
             else:
                 fi = pre_process(init_frame)
             Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
