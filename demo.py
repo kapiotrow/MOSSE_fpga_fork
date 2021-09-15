@@ -10,6 +10,6 @@ parse.add_argument('--record', action='store_true', help='record the frames')
 
 if __name__ == '__main__':
     args = parse.parse_args()
-    img_path = 'datasets/Car4'
-    tracker = mosse(args, img_path)
+    img_path = '../datasets/VOT2013/car'
+    tracker = mosse(args, img_path, FFT_SIZE=200)
     tracker.start_tracking()

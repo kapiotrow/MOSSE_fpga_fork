@@ -26,13 +26,15 @@ def show_VOT_dataset(dataset_path):
 
 
 parse = argparse.ArgumentParser()
-parse.add_argument('--lr', type=float, default=0.125, help='the learning rate')
-parse.add_argument('--sigma', type=float, default=10, help='the sigma')
+parse.add_argument('--lr', type=float, default=0.05, help='the learning rate')
+parse.add_argument('--sigma', type=float, default=9, help='the sigma')
 parse.add_argument('--num_pretrain', type=int, default=128, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
 parse.add_argument('--record', action='store_true', help='record the frames')
 parse.add_argument('--visualize', action='store_true', default=False)
 parse.add_argument('--seq', type=str, default='all')
+parse.add_argument('--params_search', action='store_true', default=False)
+parse.add_argument('--debug', action='store_true', default=False)
 args = parse.parse_args()
 
 # show_VOT_dataset('../datasets/VOT2013')
@@ -43,39 +45,93 @@ if args.seq == 'all':
 else:
     sequences = [args.seq]
 
-ious_per_sequence = {}
-for sequence in sequences:
-    print('Testing', sequence)
-    seqdir = join(DATASET_DIR, sequence)
-    imgdir = join(seqdir, 'img')
-    imgnames = os.listdir(imgdir)                  
-    imgnames.sort()
+best_score = 0
+best_params = []
 
-    tracker = mosse(args, seqdir, FFT_SIZE=200)
-    # tracker = mosse_old(args, seqdir)
-    results = tracker.start_tracking()
+if args.params_search: 
 
-    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
-    # print('results, gt:', len(results), len(gt_boxes))
+    for sigma in range(2, 20):
+        for lr in list(np.linspace(0.05, 0.5, 20)):
+            args.sigma = sigma
+            args.lr = lr
+            ious_per_sequence = {}
+            for sequence in sequences:
+                # print('Testing', sequence)
+                seqdir = join(DATASET_DIR, sequence)
+                imgdir = join(seqdir, 'img')
+                imgnames = os.listdir(imgdir)                  
+                imgnames.sort()
 
-    ious = []
-    for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes):
-        imgpath = join(imgdir, imgname)
-        iou = bbox_iou(res_box, gt_box)
-        ious.append(iou)
+                tracker = mosse(args, seqdir, FFT_SIZE=200)
+                # tracker = mosse_old(args, seqdir)
+                results = tracker.start_tracking()
 
-        if args.visualize:
-            img = cv2.imread(imgpath)
-            cv2.rectangle(img, (gt_box[0], gt_box[1]), (gt_box[0]+gt_box[2], gt_box[1]+gt_box[3]), (0, 255, 0, 2))
-            cv2.rectangle(img, (res_box[0], res_box[1]), (res_box[0]+res_box[2], res_box[1]+res_box[3]), (255, 0, 0, 2))
-            cv2.imshow('gt', img)
-            # print(iou)
-            if cv2.waitKey(0) == ord('q'):
-                break
+                gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
+                # print('results, gt:', len(results), len(gt_boxes))
 
-    ious_per_sequence[sequence] = np.mean(ious)
+                ious = []
+                for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes):
+                    imgpath = join(imgdir, imgname)
+                    iou = bbox_iou(res_box, gt_box)
+                    ious.append(iou)
 
-for k, v in ious_per_sequence.items():
-    print(k, v)
+                    if args.visualize:
+                        img = cv2.imread(imgpath)
+                        cv2.rectangle(img, (gt_box[0], gt_box[1]), (gt_box[0]+gt_box[2], gt_box[1]+gt_box[3]), (0, 255, 0, 2))
+                        cv2.rectangle(img, (res_box[0], res_box[1]), (res_box[0]+res_box[2], res_box[1]+res_box[3]), (255, 0, 0, 2))
+                        cv2.imshow('gt', img)
+                        # print(iou)
+                        if cv2.waitKey(0) == ord('q'):
+                            break
 
-print('Mean IoU over dataset:', np.mean(list(ious_per_sequence.values())) )
+                ious_per_sequence[sequence] = np.mean(ious)
+
+            # for k, v in ious_per_sequence.items():
+            #     print(k, v)
+            score = np.mean(list(ious_per_sequence.values()))
+            if score > best_score:
+                best_score = score
+                best_params = [sigma, lr]
+            print('[{:.3f}, {:.3f}]: {:.3f}\tbest: {:.3f}'.format(sigma, lr, score, best_score))
+
+    print('Finished. Best score:', best_score, 'best params:', best_params)
+
+else:
+    print('sigma: {:.3f}\tlr: {:.3f}'.format(args.sigma, args.lr))
+    ious_per_sequence = {}
+    for sequence in sequences:
+        # print('Testing', sequence)
+        seqdir = join(DATASET_DIR, sequence)
+        imgdir = join(seqdir, 'img')
+        imgnames = os.listdir(imgdir)                  
+        imgnames.sort()
+
+        tracker = mosse(args, seqdir, FFT_SIZE=200)
+        # tracker = mosse_old(args, seqdir)
+        results = tracker.start_tracking()
+
+        gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
+        # print('results, gt:', len(results), len(gt_boxes))
+
+        ious = []
+        for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes):
+            imgpath = join(imgdir, imgname)
+            iou = bbox_iou(res_box, gt_box)
+            ious.append(iou)
+
+            if args.visualize:
+                img = cv2.imread(imgpath)
+                cv2.rectangle(img, (gt_box[0], gt_box[1]), (gt_box[0]+gt_box[2], gt_box[1]+gt_box[3]), (0, 255, 0, 2))
+                cv2.rectangle(img, (res_box[0], res_box[1]), (res_box[0]+res_box[2], res_box[1]+res_box[3]), (255, 0, 0, 2))
+                cv2.imshow('gt', img)
+                # print(iou)
+                if cv2.waitKey(0) == ord('q'):
+                    break
+
+        ious_per_sequence[sequence] = np.mean(ious)
+        print(sequence, ':', np.mean(ious))
+
+    for k, v in ious_per_sequence.items():
+        print(k, v)
+    print('Mean IoU:', np.mean(list(ious_per_sequence.values())))
+
