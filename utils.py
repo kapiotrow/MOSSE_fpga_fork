@@ -4,6 +4,10 @@ import torch
 import imutils
 
 
+def init_seeds(seed=0):
+    np.random.seed(seed)
+
+
 # pre-processing the image... DEPRECATED
 def pre_process(img):
     # print('USING DEPRECATED PREPROCESSING')

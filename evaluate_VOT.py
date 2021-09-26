@@ -4,8 +4,11 @@ import cv2
 import argparse
 import numpy as np
 
-from utils import bbox_iou, load_gt
-from mosse import mosse, mosse_old
+from utils import bbox_iou, load_gt, init_seeds
+from mosse import mosse
+
+
+init_seeds()
 
 
 def show_VOT_dataset(dataset_path):
@@ -50,7 +53,7 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(2, 20):
+    for sigma in range(9, 20):
         for lr in list(np.linspace(0.05, 0.5, 20)):
             args.sigma = sigma
             args.lr = lr
