@@ -179,17 +179,11 @@ class mosse:
                     fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
                     fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
                 # online update...
-                Ai.info()
-                Bi.info()
                 if self.use_fixed_point:
                     Ai = self.args.lr * (G * Fxp(np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) ) + (1 - self.args.lr) * Ai
-                    Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
-                    Ai.info()
-                    Bi.info()
+                    Bi = self.args.lr * Fxp(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) + (1 - self.args.lr) * Bi
                     Ai = Fxp(Ai, *self.fxp_precision)
                     Bi = Fxp(Bi, *self.fxp_precision)
-                    Ai.info()
-                    Bi.info()
                 else:
                     Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
                     Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
