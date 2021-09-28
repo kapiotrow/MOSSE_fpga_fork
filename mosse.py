@@ -34,7 +34,8 @@ class mosse:
         self.big_search_window = True
         self.FFT_SIZE = FFT_SIZE
         self.use_fixed_point = True
-        self.fxp_precision = [True, 37, 6]
+        self.fractional_precision = 10
+        self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
 
     #bbox: [xmin, ymin, xmax, ymax]
@@ -115,17 +116,14 @@ class mosse:
             if idx == 0:
                 Ai = self.args.lr * Ai
                 Bi = self.args.lr * Bi
-                # print(np.max(np.abs(np.real(Ai))), np.max(np.abs(np.imag(Ai))))
-                # print(np.max(np.abs(np.real(Bi))), np.max(np.abs(np.imag(Bi))))
+
                 if self.use_fixed_point:
                     Ai = Fxp(Ai, *self.fxp_precision)
                     Bi = Fxp(Bi, *self.fxp_precision)
-                # print(np.max(np.abs(np.real(Ai))), np.max(np.abs(np.imag(Ai))))
-                # print(np.max(np.abs(np.real(Bi))), np.max(np.abs(np.imag(Bi))))
-                
-                Hi = Ai / Bi
-                
-                # print('hello:', Hi)
+                    Hi = Fxp(Ai / Bi, *self.fxp_precision)
+                else:
+                    Hi = Ai / Bi
+
                 pos = init_gt.copy()
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
@@ -184,10 +182,12 @@ class mosse:
                     Bi = self.args.lr * Fxp(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) + (1 - self.args.lr) * Bi
                     Ai = Fxp(Ai, *self.fxp_precision)
                     Bi = Fxp(Bi, *self.fxp_precision)
+                    Hi = Fxp(Ai / Bi, *self.fxp_precision)
                 else:
                     Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
                     Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
-                Hi = Ai / Bi
+                    Hi = Ai / Bi
+                
 
             results.append(pos.copy())
             if self.args.debug:
