@@ -33,9 +33,11 @@ class mosse:
         self.pad_type = 'center'
         self.big_search_window = True
         self.FFT_SIZE = FFT_SIZE
-        self.use_fixed_point = True
-        self.fractional_precision = 10
+        self.use_fixed_point = False
+        self.fractional_precision = 32
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
+
+
 
 
     #bbox: [xmin, ymin, xmax, ymax]
@@ -74,9 +76,8 @@ class mosse:
         return window
 
 
-    # start to do the object tracking...
-    def start_tracking(self):
-        results = []
+    def initialize(self):
+
         # get the image of the first frame... (read as gray scale image...)
         gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
         init_img = cv2.imread(self.frame_lists[0])
@@ -96,7 +97,6 @@ class mosse:
             self.FFT_SIZE = maxdim
         # start to draw the gaussian response...
         response_map = self._get_gauss_response(init_frame, init_gt)
-        # start to create the training set ...
         # get the goal..
         g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
         g, _ = pad_img(g, self.FFT_SIZE, pad_type=self.pad_type)
@@ -107,6 +107,65 @@ class mosse:
             G = np.array(G)
         # start to do the pre-training...
         Ai, Bi = self._pre_training(init_gt, init_frame, G)
+        self.init_gt = init_gt
+
+        return Ai, Bi, G
+
+
+    def predict(self, frame_gray, clip_pos, Hi):
+
+        if self.big_search_window:
+            fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
+            fi = self.pre_process(fi)
+        else:
+            fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+            fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
+        
+        if self.use_fixed_point:
+            # print('Hi_fixed', Fxp(Hi).info())
+            Gi = Fxp(Hi, *self.fxp_precision) * Fxp(np.fft.fft2(fi), *self.fxp_precision)
+            Gi = np.array(Gi)
+            gi = np.real(np.fft.ifft2(Gi))
+        else:
+            Gi = Hi * np.fft.fft2(fi)
+            gi = np.real(np.fft.ifft2(Gi))
+
+        if self.args.debug:
+            cv2.imshow('response', (gi*255).astype(np.uint8))   
+
+        return gi
+
+
+    def update(self, frame_gray, clip_pos, Ai, Bi, G):
+        # get the current fi..
+        if self.big_search_window:
+            fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
+            fi = self.pre_process(fi)
+        else:
+            fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+            fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
+        # online update...
+        if self.use_fixed_point:
+            Ai = self.args.lr * (G * Fxp(np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) ) + (1 - self.args.lr) * Ai
+            Bi = self.args.lr * Fxp(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) + (1 - self.args.lr) * Bi
+            # Ai.info()
+            # Bi.info()
+            Ai = Fxp(Ai.get_val(), *self.fxp_precision)
+            Bi = Fxp(Bi.get_val(), *self.fxp_precision)
+            Hi = Fxp(Ai / Bi, *self.fxp_precision)
+        else:
+            Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
+            Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
+            Hi = Ai / Bi
+
+        return Ai, Bi, Hi
+
+
+    # start to do the object tracking...
+    def start_tracking(self):
+        results = []
+        Ai, Bi, G = self.initialize()
+        
         # start the tracking...
         start_time = time.time()
         for idx in range(len(self.frame_lists)):
@@ -124,30 +183,10 @@ class mosse:
                 else:
                     Hi = Ai / Bi
 
-                pos = init_gt.copy()
+                pos = self.init_gt.copy()
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
-                if self.big_search_window:
-                    fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
-                    fi = self.pre_process(fi)
-                else:
-                    fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                    fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
-                
-                if self.use_fixed_point:
-                    # print('Hi_fixed', Fxp(Hi).info())
-                    Gi = Fxp(Hi, *self.fxp_precision) * Fxp(np.fft.fft2(fi), *self.fxp_precision)
-                    Gi = np.array(Gi)
-                    gi = np.real(np.fft.ifft2(Gi))
-                else:
-                    Gi = Hi * np.fft.fft2(fi)
-                    gi = np.real(np.fft.ifft2(Gi))
-
-                if self.args.debug:
-                    cv2.imshow('response', (gi*255).astype(np.uint8))   
-                # print('gi:', gi.shape, gi.dtype, type(gi))
-                # cv2.imshow('predicted gaussian', gi)
-                # cv2.waitKey(0)
+                gi = self.predict(frame_gray, clip_pos, Hi)
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
@@ -169,26 +208,8 @@ class mosse:
                 clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
                 clip_pos = clip_pos.astype(np.int64)
 
-                # get the current fi..
-                if self.big_search_window:
-                    fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
-                    fi = self.pre_process(fi)
-                else:
-                    fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-                    fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
-                # online update...
-                if self.use_fixed_point:
-                    Ai = self.args.lr * (G * Fxp(np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) ) + (1 - self.args.lr) * Ai
-                    Bi = self.args.lr * Fxp(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) + (1 - self.args.lr) * Bi
-                    Ai = Fxp(Ai, *self.fxp_precision)
-                    Bi = Fxp(Bi, *self.fxp_precision)
-                    Hi = Fxp(Ai / Bi, *self.fxp_precision)
-                else:
-                    Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
-                    Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
-                    Hi = Ai / Bi
+                Ai, Bi, Hi = self.update(frame_gray, clip_pos, Ai, Bi, G)
                 
-
             results.append(pos.copy())
             if self.args.debug:
                 cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)

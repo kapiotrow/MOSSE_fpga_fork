@@ -134,7 +134,7 @@ else:
         ious_per_sequence[sequence] = np.mean(ious)
         print(sequence, ':', np.mean(ious))
 
-    for k, v in ious_per_sequence.items():
-        print(k, v)
+    # for k, v in ious_per_sequence.items():
+    #     print(k, v)
     print('Mean IoU:', np.mean(list(ious_per_sequence.values())))
 
