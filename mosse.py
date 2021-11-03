@@ -34,7 +34,7 @@ class mosse:
         self.big_search_window = True
         self.FFT_SIZE = FFT_SIZE
         self.use_fixed_point = False
-        self.fractional_precision = 32
+        self.fractional_precision = 8
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
 
@@ -123,8 +123,8 @@ class mosse:
         
         if self.use_fixed_point:
             # print('Hi_fixed', Fxp(Hi).info())
-            Gi = Fxp(Hi, *self.fxp_precision) * Fxp(np.fft.fft2(fi), *self.fxp_precision)
-            Gi = np.array(Gi)
+            Gi = Hi * Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
+            # Gi.info()
             gi = np.real(np.fft.ifft2(Gi))
         else:
             Gi = Hi * np.fft.fft2(fi)
@@ -146,13 +146,14 @@ class mosse:
             fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
         # online update...
         if self.use_fixed_point:
-            Ai = self.args.lr * (G * Fxp(np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) ) + (1 - self.args.lr) * Ai
-            Bi = self.args.lr * Fxp(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), *self.fxp_precision) + (1 - self.args.lr) * Bi
+            fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision)
+            Ai = self.args.lr * (G * np.conjugate(fftfi)) + (1 - self.args.lr) * Ai
+            Bi = self.args.lr * fftfi * np.conjugate(fftfi) + (1 - self.args.lr) * Bi
             # Ai.info()
             # Bi.info()
-            Ai = Fxp(Ai.get_val(), *self.fxp_precision)
-            Bi = Fxp(Bi.get_val(), *self.fxp_precision)
-            Hi = Fxp(Ai / Bi, *self.fxp_precision)
+            # Ai = Fxp(Ai.get_val(), *self.fxp_precision)
+            # Bi = Fxp(Bi.get_val(), *self.fxp_precision)
+            Hi = Fxp(Ai.get_val() / Bi.get_val(), *self.fxp_precision)
         else:
             Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
             Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
@@ -165,6 +166,16 @@ class mosse:
     def start_tracking(self):
         results = []
         Ai, Bi, G = self.initialize()
+
+        # print('Ai:', Ai)
+        # print('Bi:', Bi)
+        # self.use_fixed_point = False
+        # Ai_fp, Bi_fp, G_fp = self.initialize()
+        # print('Ai_fp:', Ai_fp)
+        # Ai_diff = np.abs(Ai - Ai_fp)
+        # print('mean Ai abs diff:', np.mean(Ai_diff))
+        # print('Exit...')
+        # sys.exit()
         
         # start the tracking...
         start_time = time.time()
@@ -177,8 +188,8 @@ class mosse:
                 Bi = self.args.lr * Bi
 
                 if self.use_fixed_point:
-                    Ai = Fxp(Ai, *self.fxp_precision)
-                    Bi = Fxp(Bi, *self.fxp_precision)
+                    # Ai = Fxp(Ai, *self.fxp_precision)
+                    # Bi = Fxp(Bi, *self.fxp_precision)
                     Hi = Fxp(Ai / Bi, *self.fxp_precision)
                 else:
                     Hi = Ai / Bi
@@ -234,15 +245,28 @@ class mosse:
             template = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
 
         fi = self.pre_process(template, padded_size=padded_size)
-        Ai = G * np.conjugate(np.fft.fft2(fi))
-        Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+        if self.use_fixed_point:
+            fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
+            Ai = Fxp(G * np.conjugate(fftfi), *self.fxp_precision).get_val()
+            Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
+        else:
+            Ai = G * np.conjugate(np.fft.fft2(fi))
+            Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         for _ in range(self.args.num_pretrain):
+            print('xd:', _, end='\r')
             if self.args.rotate:
                 fi = self.pre_process(random_warp(template), padded_size=padded_size)
             else:
                 fi = self.pre_process(template, padded_size=padded_size)
-            Ai = ( Ai + G * np.conjugate(np.fft.fft2(fi)) )
-            Bi = ( Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) )
+
+            if self.use_fixed_point:
+                fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
+                Ai = Fxp(Ai + G * np.conjugate(fftfi), *self.fxp_precision).get_val()
+                Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
+            else:
+                Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
+                Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+                
 
         return Ai, Bi
 
