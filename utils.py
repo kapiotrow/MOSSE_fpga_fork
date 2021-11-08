@@ -1,10 +1,44 @@
 import numpy as np
 import cv2
 import imutils
+import torch
+from torch.nn import Module
+import json
+
+from finnmodels import YOLO_finn
 
 
 def init_seeds(seed=0):
     np.random.seed(seed)
+
+
+def get_CF_backbone(config_path, weights_path):
+
+    class CFBackbone(Module):
+
+        def __init__(self, conv_features, take_first_n):
+            super(CFBackbone, self).__init__()
+            self.conv_features = conv_features[:take_first_n]
+
+        def forward(self, x):
+            x = 2.0 * x - torch.tensor([1.0], device=x.device)
+            for mod in self.conv_features:
+                x = mod(x)
+            
+            return x
+
+
+    with open(config_path, 'r') as json_file:
+        config = json.load(json_file)
+    detector = YOLO_finn(config).to(torch.device('cpu'))
+    checkpoint_dict = torch.load(weights_path, map_location='cpu')
+    detector.load_state_dict(checkpoint_dict['model'])
+
+    backbone = detector.backbone
+    cf_backbone = CFBackbone(backbone.conv_features, 5)
+    cf_backbone.eval()
+
+    return cf_backbone
 
 
 # pre-processing the image... DEPRECATED

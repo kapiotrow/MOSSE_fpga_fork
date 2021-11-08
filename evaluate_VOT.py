@@ -6,6 +6,7 @@ import numpy as np
 
 from utils import bbox_iou, load_gt, init_seeds
 from mosse import mosse
+from deep_mosse import DeepMosse
 
 
 init_seeds()
@@ -31,7 +32,7 @@ def show_VOT_dataset(dataset_path):
 parse = argparse.ArgumentParser()
 parse.add_argument('--lr', type=float, default=0.05, help='the learning rate')
 parse.add_argument('--sigma', type=float, default=9, help='the sigma')
-parse.add_argument('--num_pretrain', type=int, default=128, help='the number of pretrain')
+parse.add_argument('--num_pretrain', type=int, default=8, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
 parse.add_argument('--record', action='store_true', help='record the frames')
 parse.add_argument('--visualize', action='store_true', default=False)
@@ -43,6 +44,10 @@ args = parse.parse_args()
 # show_VOT_dataset('../datasets/VOT2013')
 
 DATASET_DIR = '../datasets/VOT2013'
+CONV_NETWORK_NAME = 'yolo_finn_6conv_8w8a_160x320_5anchors'
+NET_CONFIG = join('networks', CONV_NETWORK_NAME, 'config.json')
+NET_WEIGHTS = join('networks', CONV_NETWORK_NAME, 'test_best.pt')
+
 if args.seq == 'all':
     sequences = os.listdir(DATASET_DIR)
 else:
@@ -109,7 +114,7 @@ else:
         imgnames = os.listdir(imgdir)                  
         imgnames.sort()
 
-        tracker = mosse(args, seqdir, FFT_SIZE=200)
+        tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=200)
         # tracker = mosse_old(args, seqdir)
         results = tracker.start_tracking()
 
