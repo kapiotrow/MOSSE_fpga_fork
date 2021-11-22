@@ -115,7 +115,7 @@ else:
         imgnames.sort()
 
         tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
-        # tracker = mosse_old(args, seqdir)
+        # tracker = mosse(args, seqdir, FFT_SIZE=200)
         results = tracker.start_tracking()
 
         gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))

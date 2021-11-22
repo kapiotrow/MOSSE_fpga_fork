@@ -69,8 +69,8 @@ class DeepMosse:
             padded_frame = torch.nn.functional.pad(frame, (size, size, size, size))
             # cv2.imshow('padded frame', padded_frame.astype(np.uint8))
             window = padded_frame[:, win_ymin : win_ymax, win_xmin : win_xmax]
-            print('window shape:', window.shape)
-            print('padded frame:', padded_frame.shape)
+            # print('window shape:', window.shape)
+            # print('padded frame:', padded_frame.shape)
         else:
             window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
         
@@ -94,12 +94,12 @@ class DeepMosse:
         # init_gt = cv2.selectROI('demo', init_img, False, False)
         # transform init bboxes from image space to cnn features space
         init_gt = gt_boxes[0]
-        x_scale = img_features.shape[2] / init_img.shape[1]
-        y_scale = img_features.shape[1] / init_img.shape[0]
-        init_gt[0] *= x_scale
-        init_gt[1] *= y_scale
-        init_gt[2] *= x_scale
-        init_gt[3] *= y_scale
+        self.x_scale = img_features.shape[2] / init_img.shape[1]
+        self.y_scale = img_features.shape[1] / init_img.shape[0]
+        init_gt[0] *= self.x_scale
+        init_gt[1] *= self.y_scale
+        init_gt[2] *= self.x_scale
+        init_gt[3] *= self.y_scale
         init_gt = np.array(init_gt).astype(np.int64)
         # init_gt[2] -= init_gt[2] % 2
         # init_gt[3] -= init_gt[3] % 2
@@ -128,13 +128,13 @@ class DeepMosse:
         return Ai, Bi, G
 
 
-    def predict(self, frame_gray, clip_pos, Hi):
+    def predict(self, frame, clip_pos, Hi):
 
         if self.big_search_window:
-            fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
+            fi = self.crop_search_window(clip_pos, frame, self.FFT_SIZE)
             fi = self.pre_process(fi)
         else:
-            fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+            fi = frame[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
             fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
         
         if self.use_fixed_point:
@@ -144,6 +144,8 @@ class DeepMosse:
             gi = np.real(np.fft.ifft2(Gi))
         else:
             Gi = Hi * np.fft.fft2(fi)
+            Gi = np.sum(Gi, axis=0)
+            # print('dżi:', Gi.shape)
             gi = np.real(np.fft.ifft2(Gi))
 
         if self.args.debug:
@@ -152,13 +154,13 @@ class DeepMosse:
         return gi
 
 
-    def update(self, frame_gray, clip_pos, Ai, Bi, G):
+    def update(self, frame, clip_pos, Ai, Bi, G):
         # get the current fi..
         if self.big_search_window:
-            fi = self.crop_search_window(clip_pos, frame_gray, self.FFT_SIZE)
+            fi = self.crop_search_window(clip_pos, frame, self.FFT_SIZE)
             fi = self.pre_process(fi)
         else:
-            fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
+            fi = frame[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
             fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
         # online update...
         if self.use_fixed_point:
@@ -172,7 +174,7 @@ class DeepMosse:
             Hi = Fxp(Ai.get_val() / Bi.get_val(), *self.fxp_precision)
         else:
             Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
-            Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
+            Bi = self.args.lr * np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), axis=0) + (1 - self.args.lr) * Bi
             Hi = Ai / Bi
 
         return Ai, Bi, Hi
@@ -197,11 +199,16 @@ class DeepMosse:
         start_time = time.time()
         for idx in range(len(self.frame_lists)):
             current_frame = cv2.imread(self.frame_lists[idx])
-            frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-            frame_gray = frame_gray.astype(np.float32)
+            # frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+            current_frame_preproc = self.cnn_preprocess(current_frame)
+            img_features = self.backbone(current_frame_preproc)[0].detach()
+            # frame_gray = frame_gray.astype(np.float32)
             if idx == 0:
                 Ai = self.args.lr * Ai
                 Bi = self.args.lr * Bi
+
+                # print('Ai:', Ai.shape, type(Ai))
+                # print('Bi:', Bi.shape, type(Bi))
 
                 if self.use_fixed_point:
                     # Ai = Fxp(Ai, *self.fxp_precision)
@@ -213,7 +220,7 @@ class DeepMosse:
                 pos = self.init_gt.copy()
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
-                gi = self.predict(frame_gray, clip_pos, Hi)
+                gi = self.predict(img_features, clip_pos, Hi)
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
@@ -229,17 +236,25 @@ class DeepMosse:
                 pos[1] = pos[1] + dy
 
                 # trying to get the clipped position [xmin, ymin, xmax, ymax]
-                clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
-                clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
-                clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
-                clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
+                clip_pos[0] = np.clip(pos[0], 0, img_features.shape[2])
+                clip_pos[1] = np.clip(pos[1], 0, img_features.shape[1])
+                clip_pos[2] = np.clip(pos[0]+pos[2], 0, img_features.shape[2])
+                clip_pos[3] = np.clip(pos[1]+pos[3], 0, img_features.shape[1])
                 clip_pos = clip_pos.astype(np.int64)
 
-                Ai, Bi, Hi = self.update(frame_gray, clip_pos, Ai, Bi, G)
+                Ai, Bi, Hi = self.update(img_features, clip_pos, Ai, Bi, G)
                 
-            results.append(pos.copy())
+            result_pos = pos.copy()
+            result_pos[0] /= self.x_scale
+            result_pos[1] /= self.y_scale
+            result_pos[2] /= self.x_scale
+            result_pos[3] /= self.y_scale
+            results.append(result_pos)
             if self.args.debug:
-                cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
+                debug_pos = [clip_pos[0]/self.x_scale, clip_pos[1]/self.y_scale, clip_pos[2]/self.x_scale, clip_pos[3]/self.y_scale]
+                debug_pos = [int(el) for el in debug_pos]
+                # print('debug pos:', debug_pos)
+                cv2.rectangle(current_frame, (debug_pos[0], debug_pos[1]), (debug_pos[2], debug_pos[3]), (255, 0, 0), 2)
                 cv2.imshow('demo', current_frame)
                 if cv2.waitKey(0) == ord('q'):
                     break
@@ -267,7 +282,8 @@ class DeepMosse:
             Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
         else:
             Ai = G * np.conjugate(np.fft.fft2(fi))
-            Bi = np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
+            Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+            Bi = Bi.sum(axis=0)
             # print('ai:', Ai.shape)
             # print('bi:', Bi.shape)
 
@@ -284,7 +300,8 @@ class DeepMosse:
                 Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
             else:
                 Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
-                Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
+                Bi = Bi + np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), axis=0)
+                # Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
                 
 
         return Ai, Bi
