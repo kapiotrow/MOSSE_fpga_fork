@@ -114,7 +114,7 @@ else:
         imgnames = os.listdir(imgdir)                  
         imgnames.sort()
 
-        tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=200)
+        tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
         # tracker = mosse_old(args, seqdir)
         results = tracker.start_tracking()
 

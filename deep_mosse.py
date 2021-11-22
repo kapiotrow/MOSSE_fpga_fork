@@ -65,17 +65,19 @@ class DeepMosse:
             win_ymin += size
             win_ymax += size
 
-            padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
+            # padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
+            padded_frame = torch.nn.functional.pad(frame, (size, size, size, size))
             # cv2.imshow('padded frame', padded_frame.astype(np.uint8))
-            window = padded_frame[win_ymin : win_ymax, win_xmin : win_xmax]
-            # print('window shape:', window.shape)
+            window = padded_frame[:, win_ymin : win_ymax, win_xmin : win_xmax]
+            print('window shape:', window.shape)
+            print('padded frame:', padded_frame.shape)
         else:
             window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
         
-        if self.args.debug:
-            cv2.imshow('search window', window.astype(np.uint8))
+        # if self.args.debug:
+        #     cv2.imshow('search window', window.astype(np.uint8))
 
-        return window
+        return window.numpy()
 
 
     def initialize(self):
@@ -83,10 +85,10 @@ class DeepMosse:
         # get the image of the first frame... (read as gray scale image...)
         gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
         init_img = cv2.imread(self.frame_lists[0])
-        # print('in img:', init_img.shape)
+        print('in img:', init_img.shape)
         init_frame = self.cnn_preprocess(init_img)
-        img_features = self.backbone(init_frame)[0]
-        # print('out features:', img_features.shape)
+        img_features = self.backbone(init_frame)[0].detach()
+        print('out features:', img_features.shape)
 
         # get the init ground truth.. [x, y, width, height]
         # init_gt = cv2.selectROI('demo', init_img, False, False)
@@ -265,7 +267,9 @@ class DeepMosse:
             Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
         else:
             Ai = G * np.conjugate(np.fft.fft2(fi))
-            Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+            Bi = np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
+            # print('ai:', Ai.shape)
+            # print('bi:', Bi.shape)
 
         for _ in range(self.args.num_pretrain):
             # print('xd:', _, end='\r')
@@ -280,7 +284,7 @@ class DeepMosse:
                 Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
             else:
                 Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
-                Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+                Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
                 
 
         return Ai, Bi
@@ -292,11 +296,14 @@ class DeepMosse:
         # xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
         # cv2.imshow('padded', xd.astype(np.uint8))
 
-        height, width = img.shape
-        img = np.log(img + 1)
-        img = (img - np.mean(img)) / (np.std(img) + 1e-5)
+        channels, height, width = img.shape
+        # print(type(img), img.shape)
+        # img = np.log(img + 1)
+        # print('img:', img)
+        # img = (img - np.mean(img)) / (np.std(img) + 1e-5)
 
         window = window_func_2d(height, width)
+        # print('window:', window.shape)
         if self.use_fixed_point:
             img = Fxp(img, *self.fxp_precision) * Fxp(window, *self.fxp_precision)
             img = np.array(img)
@@ -304,6 +311,8 @@ class DeepMosse:
             img = img * window
 
         img, _ = pad_img(img, padded_size, pad_type=self.pad_type)
+
+        # print('img shape:', img.shape)
 
         return img
 
