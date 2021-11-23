@@ -31,14 +31,15 @@ def show_VOT_dataset(dataset_path):
 
 parse = argparse.ArgumentParser()
 parse.add_argument('--lr', type=float, default=0.05, help='the learning rate')
-parse.add_argument('--sigma', type=float, default=9, help='the sigma')
-parse.add_argument('--num_pretrain', type=int, default=8, help='the number of pretrain')
+parse.add_argument('--sigma', type=float, default=7, help='the sigma')
+parse.add_argument('--num_pretrain', type=int, default=128, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
 parse.add_argument('--record', action='store_true', help='record the frames')
 parse.add_argument('--visualize', action='store_true', default=False)
 parse.add_argument('--seq', type=str, default='all')
 parse.add_argument('--params_search', action='store_true', default=False)
 parse.add_argument('--debug', action='store_true', default=False)
+parse.add_argument('--deep', action='store_true', default=False, help='whether to use deep features instead of grayscale')
 args = parse.parse_args()
 
 # show_VOT_dataset('../datasets/VOT2013')
@@ -58,7 +59,7 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(9, 20):
+    for sigma in range(8, 20):
         for lr in list(np.linspace(0.05, 0.5, 20)):
             args.sigma = sigma
             args.lr = lr
@@ -70,7 +71,10 @@ if args.params_search:
                 imgnames = os.listdir(imgdir)                  
                 imgnames.sort()
 
-                tracker = mosse(args, seqdir, FFT_SIZE=200)
+                if args.deep:
+                    tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
+                else:
+                    tracker = mosse(args, seqdir, FFT_SIZE=200)
                 # tracker = mosse_old(args, seqdir)
                 results = tracker.start_tracking()
 
@@ -114,8 +118,10 @@ else:
         imgnames = os.listdir(imgdir)                  
         imgnames.sort()
 
-        tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
-        # tracker = mosse(args, seqdir, FFT_SIZE=200)
+        if args.deep:
+            tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
+        else:
+            tracker = mosse(args, seqdir, FFT_SIZE=200)
         results = tracker.start_tracking()
 
         gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))

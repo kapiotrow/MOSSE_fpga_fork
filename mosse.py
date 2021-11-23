@@ -24,6 +24,7 @@ Date: 2018-05-28
 class mosse:
     def __init__(self, args, sequence_path, FFT_SIZE=0):
         # get arguments..
+        print('just your regular boi')
         self.args = args
         self.sequence_path = sequence_path
         self.img_path = join(sequence_path, 'img')
@@ -253,7 +254,7 @@ class mosse:
             Ai = G * np.conjugate(np.fft.fft2(fi))
             Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
         for _ in range(self.args.num_pretrain):
-            print('xd:', _, end='\r')
+            # print('xd:', _, end='\r')
             if self.args.rotate:
                 fi = self.pre_process(random_warp(template), padded_size=padded_size)
             else:

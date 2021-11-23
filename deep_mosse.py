@@ -85,10 +85,10 @@ class DeepMosse:
         # get the image of the first frame... (read as gray scale image...)
         gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
         init_img = cv2.imread(self.frame_lists[0])
-        print('in img:', init_img.shape)
+        # print('in img:', init_img.shape)
         init_frame = self.cnn_preprocess(init_img)
         img_features = self.backbone(init_frame)[0].detach()
-        print('out features:', img_features.shape)
+        # print('out features:', img_features.shape)
 
         # get the init ground truth.. [x, y, width, height]
         # init_gt = cv2.selectROI('demo', init_img, False, False)
@@ -107,7 +107,7 @@ class DeepMosse:
         init_gt_h = init_gt[3]
         maxdim = max(init_gt_w, init_gt_h)
         if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
-            print('Warning, FFT_SIZE changed to ', maxdim)
+            # print('Warning, FFT_SIZE changed to ', maxdim)
             self.FFT_SIZE = maxdim
         init_frame = img_features
 
