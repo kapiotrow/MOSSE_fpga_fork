@@ -72,7 +72,7 @@ if args.params_search:
                 imgnames.sort()
 
                 if args.deep:
-                    tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
+                    tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=200)
                 else:
                     tracker = mosse(args, seqdir, FFT_SIZE=200)
                 # tracker = mosse_old(args, seqdir)

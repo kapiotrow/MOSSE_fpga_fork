@@ -8,7 +8,7 @@ import torch
 from fxpmath import Fxp
 import cv2
 
-from utils import linear_mapping, random_warp, pad_img, load_gt, window_func_2d, pre_process, get_CF_backbone
+from utils import get_VGG_backbone, linear_mapping, random_warp, pad_img, load_gt, window_func_2d, pre_process, get_CF_backbone
 
 
 # FFT_SIZE = 200
@@ -26,7 +26,10 @@ class DeepMosse:
     def __init__(self, args, sequence_path, net_config_path, net_weights_path, FFT_SIZE=0):
         # get arguments..
         print('its so deep')
-        self.backbone = get_CF_backbone(net_config_path, net_weights_path)
+        # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
+        self.backbone = get_VGG_backbone()
+        self.stride = 2
+        # sys.exit()
 
         self.args = args
         self.sequence_path = sequence_path
@@ -65,41 +68,49 @@ class DeepMosse:
             win_ymin += size
             win_ymax += size
 
-            # padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
-            padded_frame = torch.nn.functional.pad(frame, (size, size, size, size))
+            padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
+            # padded_frame = torch.nn.functional.pad(frame, (size, size, size, size))
             # cv2.imshow('padded frame', padded_frame.astype(np.uint8))
-            window = padded_frame[:, win_ymin : win_ymax, win_xmin : win_xmax]
-            # print('window shape:', window.shape)
+            # cv2.waitKey(0)
+            window = padded_frame[win_ymin : win_ymax, win_xmin : win_xmax, :]
+            cnn_window = self.cnn_preprocess(window)
+            # print('inwindow:', window.shape)
+            cnn_window = self.backbone(cnn_window)[0].detach()
+            # print('window shape:', cnn_window.shape)
             # print('padded frame:', padded_frame.shape)
+            # sys.exit()
         else:
             window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
         
-        # if self.args.debug:
-        #     cv2.imshow('search window', window.astype(np.uint8))
+        if self.args.debug:
+            cv2.imshow('search window', window.astype(np.uint8))
 
-        return window.numpy()
+        # cv2.waitKey(0)
+
+        return cnn_window.numpy()
 
 
     def initialize(self):
 
         # get the image of the first frame... (read as gray scale image...)
         gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
-        init_img = cv2.imread(self.frame_lists[0])
-        # print('in img:', init_img.shape)
-        init_frame = self.cnn_preprocess(init_img)
-        img_features = self.backbone(init_frame)[0].detach()
+        init_frame = cv2.imread(self.frame_lists[0])
+        # print('in img:', init_frame.shape)
+        # init_frame = self.cnn_preprocess(init_frame)
+        # img_features = self.backbone(init_frame)[0].detach()
         # print('out features:', img_features.shape)
+        # sys.exit()
 
         # get the init ground truth.. [x, y, width, height]
         # init_gt = cv2.selectROI('demo', init_img, False, False)
         # transform init bboxes from image space to cnn features space
         init_gt = gt_boxes[0]
-        self.x_scale = img_features.shape[2] / init_img.shape[1]
-        self.y_scale = img_features.shape[1] / init_img.shape[0]
-        init_gt[0] *= self.x_scale
-        init_gt[1] *= self.y_scale
-        init_gt[2] *= self.x_scale
-        init_gt[3] *= self.y_scale
+        # self.x_scale = img_features.shape[2] / init_img.shape[1]
+        # self.y_scale = img_features.shape[1] / init_img.shape[0]
+        # init_gt[0] *= self.x_scale
+        # init_gt[1] *= self.y_scale
+        # init_gt[2] *= self.x_scale
+        # init_gt[3] *= self.y_scale
         init_gt = np.array(init_gt).astype(np.int64)
         # init_gt[2] -= init_gt[2] % 2
         # init_gt[3] -= init_gt[3] % 2
@@ -109,14 +120,14 @@ class DeepMosse:
         if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
             # print('Warning, FFT_SIZE changed to ', maxdim)
             self.FFT_SIZE = maxdim
-        init_frame = img_features
+        # init_frame = img_features
 
         # start to draw the gaussian response...
-        response_map = self._get_gauss_response(init_frame, init_gt)
+        g = self._get_gauss_response(self.FFT_SIZE//self.stride)
         # get the goal..
-        g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        g, _ = pad_img(g, self.FFT_SIZE, pad_type=self.pad_type)
-        # cv2.imshow('goal', g)
+        # g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+        # g, _ = pad_img(g, self.FFT_SIZE/self.stride, pad_type=self.pad_type)
+        cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
         if self.use_fixed_point:
             G = Fxp(G, *self.fxp_precision)
@@ -185,8 +196,8 @@ class DeepMosse:
         results = []
         Ai, Bi, G = self.initialize()
 
-        # print('Ai:', Ai)
-        # print('Bi:', Bi)
+        # print('Ai:', Ai.shape)
+        # print('Bi:', Bi.shape)
         # self.use_fixed_point = False
         # Ai_fp, Bi_fp, G_fp = self.initialize()
         # print('Ai_fp:', Ai_fp)
@@ -200,8 +211,8 @@ class DeepMosse:
         for idx in range(len(self.frame_lists)):
             current_frame = cv2.imread(self.frame_lists[idx])
             # frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-            current_frame_preproc = self.cnn_preprocess(current_frame)
-            img_features = self.backbone(current_frame_preproc)[0].detach()
+            # current_frame_preproc = self.cnn_preprocess(current_frame)
+            # img_features = self.backbone(current_frame_preproc)[0].detach()
             # frame_gray = frame_gray.astype(np.float32)
             if idx == 0:
                 Ai = self.args.lr * Ai
@@ -220,7 +231,7 @@ class DeepMosse:
                 pos = self.init_gt.copy()
                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
             else:
-                gi = self.predict(img_features, clip_pos, Hi)
+                gi = self.predict(current_frame, clip_pos, Hi)
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
@@ -232,29 +243,24 @@ class DeepMosse:
                     dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2) if len(max_pos[1]) != 0 else 0
 
                 # update the position...
-                pos[0] = pos[0] + dx
-                pos[1] = pos[1] + dy
+                pos[0] = pos[0] + dx*self.stride
+                pos[1] = pos[1] + dy*self.stride
 
                 # trying to get the clipped position [xmin, ymin, xmax, ymax]
-                clip_pos[0] = np.clip(pos[0], 0, img_features.shape[2])
-                clip_pos[1] = np.clip(pos[1], 0, img_features.shape[1])
-                clip_pos[2] = np.clip(pos[0]+pos[2], 0, img_features.shape[2])
-                clip_pos[3] = np.clip(pos[1]+pos[3], 0, img_features.shape[1])
+                # print('curframe:', current_frame.shape)
+                clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
+                clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
+                clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
+                clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
                 clip_pos = clip_pos.astype(np.int64)
 
-                Ai, Bi, Hi = self.update(img_features, clip_pos, Ai, Bi, G)
+                Ai, Bi, Hi = self.update(current_frame, clip_pos, Ai, Bi, G)
                 
+
             result_pos = pos.copy()
-            result_pos[0] /= self.x_scale
-            result_pos[1] /= self.y_scale
-            result_pos[2] /= self.x_scale
-            result_pos[3] /= self.y_scale
             results.append(result_pos)
             if self.args.debug:
-                debug_pos = [clip_pos[0]/self.x_scale, clip_pos[1]/self.y_scale, clip_pos[2]/self.x_scale, clip_pos[3]/self.y_scale]
-                debug_pos = [int(el) for el in debug_pos]
-                # print('debug pos:', debug_pos)
-                cv2.rectangle(current_frame, (debug_pos[0], debug_pos[1]), (debug_pos[2], debug_pos[3]), (255, 0, 0), 2)
+                cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
                 cv2.imshow('demo', current_frame)
                 if cv2.waitKey(0) == ord('q'):
                     break
@@ -346,14 +352,13 @@ class DeepMosse:
 
 
     # get the ground-truth gaussian reponse...
-    def _get_gauss_response(self, img, gt):
-        # get the shape of the image..
-        channels, height, width = img.shape
-        # get the mesh grid...
-        xx, yy = np.meshgrid(np.arange(width), np.arange(height))
+    def _get_gauss_response(self, size):
+       
+        xx, yy = np.meshgrid(np.arange(size), np.arange(size))
         # get the center of the object...
-        center_x = gt[0] + 0.5 * gt[2]
-        center_y = gt[1] + 0.5 * gt[3]
+        center_x = size // 2
+        center_y = size // 2
+        
         # cal the distance...
         dist = (np.square(xx - center_x) + np.square(yy - center_y)) / (2 * self.args.sigma)
         # get the response map...

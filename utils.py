@@ -3,6 +3,7 @@ import cv2
 import imutils
 import torch
 from torch.nn import Module
+import torchvision.models as models
 import json
 
 from finnmodels import YOLO_finn
@@ -10,6 +11,14 @@ from finnmodels import YOLO_finn
 
 def init_seeds(seed=0):
     np.random.seed(seed)
+
+
+def get_VGG_backbone():
+
+    vgg = models.vgg11(pretrained=True, progress=True)
+    vgg.eval()
+
+    return vgg.features[:3]
 
 
 def get_CF_backbone(config_path, weights_path):
@@ -105,6 +114,7 @@ def pad_img(img, padded_size, pad_type='center'):
         return img, [0, 0, 0, 0]
 
     height, width = img.shape
+    # print('hw:', height, width)
     assert height <= padded_size and width <= padded_size
 
     if pad_type == 'topleft':
