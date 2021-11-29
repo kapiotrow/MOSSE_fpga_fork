@@ -13,9 +13,9 @@ def init_seeds(seed=0):
     np.random.seed(seed)
 
 
-def get_VGG_backbone():
+def get_VGG_backbone(pretrained=True):
 
-    vgg = models.vgg11(pretrained=True, progress=True)
+    vgg = models.vgg11(pretrained=pretrained, progress=True)
     vgg.eval()
 
     return vgg.features[:3]

@@ -31,8 +31,9 @@ def show_VOT_dataset(dataset_path):
 
 parse = argparse.ArgumentParser()
 parse.add_argument('--lr', type=float, default=0.05, help='the learning rate')
-parse.add_argument('--sigma', type=float, default=7, help='the sigma')
-parse.add_argument('--num_pretrain', type=int, default=128, help='the number of pretrain')
+parse.add_argument('--sigma', type=float, default=1, help='the sigma')
+parse.add_argument('--lambd', type=float, default=0, help='regularization parameter')
+parse.add_argument('--num_pretrain', type=int, default=0, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
 parse.add_argument('--record', action='store_true', help='record the frames')
 parse.add_argument('--visualize', action='store_true', default=False)
@@ -59,8 +60,8 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(8, 20):
-        for lr in list(np.linspace(0.05, 0.5, 20)):
+    for sigma in range(1, 20):
+        for lr in list(np.linspace(0.05, 0.5, 2)):
             args.sigma = sigma
             args.lr = lr
             ious_per_sequence = {}

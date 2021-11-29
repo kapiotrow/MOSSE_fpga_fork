@@ -25,7 +25,7 @@ Date: 2018-05-28
 class DeepMosse:
     def __init__(self, args, sequence_path, net_config_path, net_weights_path, FFT_SIZE=0):
         # get arguments..
-        print('its so deep')
+        # print('its so deep')
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         self.backbone = get_VGG_backbone()
         self.stride = 2
@@ -127,7 +127,7 @@ class DeepMosse:
         # get the goal..
         # g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
         # g, _ = pad_img(g, self.FFT_SIZE/self.stride, pad_type=self.pad_type)
-        cv2.imshow('goal', (g*255).astype(np.uint8))
+        # cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
         if self.use_fixed_point:
             G = Fxp(G, *self.fxp_precision)
@@ -154,7 +154,7 @@ class DeepMosse:
             # Gi.info()
             gi = np.real(np.fft.ifft2(Gi))
         else:
-            Gi = Hi * np.fft.fft2(fi)
+            Gi = np.conjugate(Hi) * np.fft.fft2(fi)
             Gi = np.sum(Gi, axis=0)
             # print('dżi:', Gi.shape)
             gi = np.real(np.fft.ifft2(Gi))
@@ -184,8 +184,9 @@ class DeepMosse:
             # Bi = Fxp(Bi.get_val(), *self.fxp_precision)
             Hi = Fxp(Ai.get_val() / Bi.get_val(), *self.fxp_precision)
         else:
-            Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
-            Bi = self.args.lr * np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), axis=0) + (1 - self.args.lr) * Bi
+            fftfi = np.fft.fft2(fi)
+            Ai = self.args.lr * (np.conjugate(G) * fftfi) + (1 - self.args.lr) * Ai
+            Bi = self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0)) + (1 - self.args.lr) * Bi
             Hi = Ai / Bi
 
         return Ai, Bi, Hi
@@ -287,8 +288,9 @@ class DeepMosse:
             Ai = Fxp(G * np.conjugate(fftfi), *self.fxp_precision).get_val()
             Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
         else:
-            Ai = G * np.conjugate(np.fft.fft2(fi))
-            Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
+            fftfi = np.fft.fft2(fi)
+            Ai = np.conjugate(G) * fftfi
+            Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd
             Bi = Bi.sum(axis=0)
             # print('ai:', Ai.shape)
             # print('bi:', Bi.shape)
@@ -305,8 +307,9 @@ class DeepMosse:
                 Ai = Fxp(Ai + G * np.conjugate(fftfi), *self.fxp_precision).get_val()
                 Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
             else:
-                Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
-                Bi = Bi + np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)), axis=0)
+                fftfi = np.fft.fft2(fi)
+                Ai = Ai + np.conjugate(G) * fftfi
+                Bi = Bi + np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd, axis=0) + self.args.lambd
                 # Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
                 
 
