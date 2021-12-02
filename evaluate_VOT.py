@@ -30,9 +30,9 @@ def show_VOT_dataset(dataset_path):
 
 
 parse = argparse.ArgumentParser()
-parse.add_argument('--lr', type=float, default=0.05, help='the learning rate')
-parse.add_argument('--sigma', type=float, default=1, help='the sigma')
-parse.add_argument('--lambd', type=float, default=0, help='regularization parameter')
+parse.add_argument('--lr', type=float, default=0.236, help='the learning rate')
+parse.add_argument('--sigma', type=float, default=18, help='the sigma')
+parse.add_argument('--lambd', type=float, default=0.1, help='regularization parameter')
 parse.add_argument('--num_pretrain', type=int, default=0, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
 parse.add_argument('--record', action='store_true', help='record the frames')
@@ -55,13 +55,15 @@ if args.seq == 'all':
 else:
     sequences = [args.seq]
 
+print(sequences)
+
 best_score = 0
 best_params = []
 
 if args.params_search: 
 
-    for sigma in range(1, 20):
-        for lr in list(np.linspace(0.05, 0.5, 2)):
+    for sigma in range(17, 20):
+        for lr in list(np.linspace(0.025, 0.5, 10)):
             args.sigma = sigma
             args.lr = lr
             ious_per_sequence = {}
@@ -73,7 +75,7 @@ if args.params_search:
                 imgnames.sort()
 
                 if args.deep:
-                    tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=200)
+                    tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=224)
                 else:
                     tracker = mosse(args, seqdir, FFT_SIZE=200)
                 # tracker = mosse_old(args, seqdir)
@@ -120,7 +122,7 @@ else:
         imgnames.sort()
 
         if args.deep:
-            tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=100)
+            tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=224)
         else:
             tracker = mosse(args, seqdir, FFT_SIZE=200)
         results = tracker.start_tracking()
