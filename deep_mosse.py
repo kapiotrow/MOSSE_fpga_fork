@@ -26,10 +26,14 @@ Date: 2018-05-28
 class DeepMosse:
     def __init__(self, args, sequence_path, net_config_path, net_weights_path, FFT_SIZE=0):
         # get arguments..
-        # print('its so deep')
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
-        self.backbone = get_VGG_backbone()
-        self.stride = 2
+        if args.deep:
+            # print('its so deep')  
+            self.backbone = get_VGG_backbone()
+            self.stride = 2
+        else:
+            # print('your regular boy')
+            self.stride = 1
         # sys.exit()
 
         self.args = args
@@ -86,15 +90,20 @@ class DeepMosse:
         xmin, ymin, xmax, ymax = bbox
         window = frame[ymin : ymax, xmin : xmax, :]
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
-        cnn_window = self.cnn_preprocess(window)
-        cnn_window = self.backbone(cnn_window)[0].detach()
-        
+
         if self.args.debug:
             cv2.imshow('search window', window.astype(np.uint8))
 
-        # print(cnn_window.shape)
+        if self.args.deep:
+            window = self.cnn_preprocess(window)
+            window = self.backbone(window)[0].detach()
+            window = window.numpy()
+        else:
+            window = window.transpose(2, 0, 1)
+            # print('shape:', window.shape)
 
-        return cnn_window.numpy()
+
+        return window
 
 
     def initialize(self):
@@ -232,13 +241,9 @@ class DeepMosse:
                 # find the max pos...
                 max_value = np.max(gi)
                 max_pos = np.where(gi == max_value)
-                if not self.big_search_window and self.FFT_SIZE != 0 and self.pad_type == 'topleft':
-                    dy = int(np.mean(max_pos[0]) - init_gt_h / 2) if len(max_pos[0]) != 0 else 0
-                    dx = int(np.mean(max_pos[1]) - init_gt_w / 2) if len(max_pos[1]) != 0 else 0
-                else:
-                    dy = np.mean(max_pos[0]) - gi.shape[0] / 2
-                    dx = np.mean(max_pos[1]) - gi.shape[1] / 2
 
+                dy = np.mean(max_pos[0]) - gi.shape[0] / 2
+                dx = np.mean(max_pos[1]) - gi.shape[1] / 2
                 dx /= self.x_scale
                 dy /= self.y_scale
                 # print('dxy:', dx, dy)
@@ -248,7 +253,6 @@ class DeepMosse:
                 pos[1] = pos[1] + round(dy)
 
                 # trying to get the clipped position [xmin, ymin, xmax, ymax]
-                # print('curframe:', current_frame.shape)
                 clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
                 clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
                 clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
@@ -275,7 +279,6 @@ class DeepMosse:
 
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
-        padded_size = self.FFT_SIZE if not self.big_search_window else 0
 
         if self.big_search_window:
             bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
@@ -283,7 +286,7 @@ class DeepMosse:
         else:
             template = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
 
-        fi = self.pre_process(template, padded_size=padded_size)
+        fi = self.pre_process(template)
         if self.use_fixed_point:
             fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
             Ai = Fxp(G * np.conjugate(fftfi), *self.fxp_precision).get_val()
@@ -293,15 +296,15 @@ class DeepMosse:
             Ai = np.conjugate(G) * fftfi
             Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd
             Bi = Bi.sum(axis=0)
-            # print('ai:', Ai.shape)
             # print('bi:', Bi.shape)
+            # print('ai:', Ai.shape)
 
         for _ in range(self.args.num_pretrain):
             # print('xd:', _, end='\r')
             if self.args.rotate:
-                fi = self.pre_process(random_warp(template), padded_size=padded_size)
+                fi = self.pre_process(random_warp(template))
             else:
-                fi = self.pre_process(template, padded_size=padded_size)
+                fi = self.pre_process(template)
 
             if self.use_fixed_point:
                 fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
@@ -318,7 +321,7 @@ class DeepMosse:
 
 
     # pre-processing the image...
-    def pre_process(self, img, padded_size=0):
+    def pre_process(self, img):
         # get the size of the img...
         # xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
         # cv2.imshow('padded', xd.astype(np.uint8))
