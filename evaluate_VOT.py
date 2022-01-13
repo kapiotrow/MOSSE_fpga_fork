@@ -9,7 +9,7 @@ from mosse import mosse
 from deep_mosse import DeepMosse
 
 
-init_seeds()
+# init_seeds()
 
 
 def show_VOT_dataset(dataset_path):
@@ -62,7 +62,7 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(1, 20):
+    for sigma in range(10, 20):
         for lr in list(np.linspace(0.025, 0.5, 10)):
             args.sigma = sigma
             args.lr = lr
@@ -121,17 +121,24 @@ else:
         imgnames = os.listdir(imgdir)                  
         imgnames.sort()
 
-        # if args.deep:
-        tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=224)
-        # else:
-        #     tracker = mosse(args, seqdir, FFT_SIZE=200)
-        results = tracker.start_tracking()
-
+        init_img = cv2.imread(join(imgdir, imgnames[0]))
         gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
-        # print('results, gt:', len(results), len(gt_boxes))
+        tracker = DeepMosse(init_img, gt_boxes[0], args)
+
+        results = []
+        for imgname in imgnames[1:]:
+            img = cv2.imread(join(imgdir, imgname))
+            position = tracker.track(img)
+            results.append(position.copy())
+
+            if args.debug:
+                cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
+                cv2.imshow('demo', img)
+                if cv2.waitKey(0) == ord('q'):
+                    break
 
         ious = []
-        for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes):
+        for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes[1:]):
             imgpath = join(imgdir, imgname)
             iou = bbox_iou(res_box, gt_box)
             ious.append(iou)

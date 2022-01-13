@@ -4,3 +4,4 @@ __pycache__
 record_frames
 datasets
 /networks
+/vot_workspace

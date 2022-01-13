@@ -24,7 +24,7 @@ Date: 2018-05-28
 
 
 class DeepMosse:
-    def __init__(self, args, sequence_path, net_config_path, net_weights_path, FFT_SIZE=0):
+    def __init__(self, init_frame, init_position, args, FFT_SIZE=224):
         # get arguments..
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         if args.deep:
@@ -37,11 +37,11 @@ class DeepMosse:
         # sys.exit()
 
         self.args = args
-        self.sequence_path = sequence_path
-        self.img_path = join(sequence_path, 'img')
+        # self.sequence_path = sequence_path
+        # self.img_path = join(sequence_path, 'img')
         # get the img lists...
-        self.frame_lists = self._get_img_lists(self.img_path)
-        self.frame_lists.sort()
+        # self.frame_lists = self._get_img_lists(self.img_path)
+        # self.frame_lists.sort()
         self.pad_type = 'center'
         self.big_search_window = True
         self.FFT_SIZE = FFT_SIZE
@@ -49,8 +49,8 @@ class DeepMosse:
         self.fractional_precision = 8
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
-        #runtime variables
-        self.G = None
+        self.initialize(init_frame, init_position)
+
 
     #bbox: [xmin, ymin, xmax, ymax]
     def crop_search_window(self, bbox, frame, size):
@@ -108,13 +108,14 @@ class DeepMosse:
         return window
 
 
-    def initialize(self):
+    def initialize(self, init_frame, init_position):
 
         # get the image of the first frame... (read as gray scale image...)
-        gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
-        init_frame = cv2.imread(self.frame_lists[0])
+        # gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
+        # init_frame = cv2.imread(self.frame_lists[0])
        
-        init_gt = gt_boxes[0]
+        self.frame_shape = init_frame.shape
+        init_gt = init_position
         init_gt = np.array(init_gt).astype(np.int64)
         init_gt_w = init_gt[2]
         init_gt_h = init_gt[3]
@@ -130,9 +131,6 @@ class DeepMosse:
 
         # start to draw the gaussian response...
         g = self._get_gauss_response(self.FFT_SIZE//self.stride)
-        # get the goal..
-        # g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-        # g, _ = pad_img(g, self.FFT_SIZE/self.stride, pad_type=self.pad_type)
         # cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
         if self.use_fixed_point:
@@ -140,11 +138,22 @@ class DeepMosse:
             G = np.array(G)
         # start to do the pre-training...
         Ai, Bi = self._pre_training(init_gt, init_frame, G)
-        self.init_gt = init_gt
 
         self.Ai = Ai
         self.Bi = Bi
         self.G = G
+
+        if self.use_fixed_point:
+            # Ai = Fxp(Ai, *self.fxp_precision)
+            # Bi = Fxp(Bi, *self.fxp_precision)
+            self.Hi = Fxp(self.Ai / self.Bi, *self.fxp_precision)
+        else:
+            self.Hi = self.Ai / self.Bi
+
+        # position in [x1, y1, w, h]
+        # clip_pos in [x1, y1, x2, y2]
+        self.position = init_gt.copy()
+        self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
 
     def predict(self, frame):
@@ -222,52 +231,18 @@ class DeepMosse:
         self.clip_pos = self.clip_pos.astype(np.int64)
 
 
-    # start to do the object tracking...
-    def start_tracking(self):
-        results = []
-        self.initialize()
+    #for vot evaluation
+    def track(self, image):
         
-        # start the tracking...
-        start_time = time.time()
-        for idx in range(len(self.frame_lists)):
-            current_frame = cv2.imread(self.frame_lists[idx])
+        if self.check_clip_pos():
+            response = self.predict(image)
+            self.update_position(response)
 
-            if idx == 0:
-                self.frame_shape = current_frame.shape
+            if self.check_clip_pos():
+                self.update(image)
 
-                if self.use_fixed_point:
-                    # Ai = Fxp(Ai, *self.fxp_precision)
-                    # Bi = Fxp(Bi, *self.fxp_precision)
-                    self.Hi = Fxp(self.Ai / self.Bi, *self.fxp_precision)
-                else:
-                    self.Hi = self.Ai / self.Bi
-
-                #position in [x1, y1, x2, y2]
-                #clip_pos in [x1, y1, w, h]
-                self.position = self.init_gt.copy()
-                self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
-            
-            elif self.check_clip_pos():
-                gi = self.predict(current_frame)
-                self.update_position(gi)
-
-                if self.check_clip_pos():
-                    self.update(current_frame)
-                
-
-            result_pos = self.position.copy()
-            results.append(result_pos)
-            if self.args.debug:
-                cv2.rectangle(current_frame, (self.position[0], self.position[1]), (self.position[0]+self.position[2], self.position[1]+self.position[3]), (255, 0, 0), 2)
-                cv2.imshow('demo', current_frame)
-                if cv2.waitKey(0) == ord('q'):
-                    break
-
-        # print(len(self.frame_lists)/(time.time() - start_time), 'fps')
-            
-
-        return results
-
+        return self.position.copy()
+        
 
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
