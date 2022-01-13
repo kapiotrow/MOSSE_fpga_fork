@@ -43,14 +43,16 @@ class DeepMosse:
         # self.frame_lists = self._get_img_lists(self.img_path)
         # self.frame_lists.sort()
         self.pad_type = 'center'
-        self.big_search_window = True
+
+        self.search_region_scale = 2    # relative to object's size
+        self.args.sigma /= self.search_region_scale
         self.FFT_SIZE = FFT_SIZE
+
         self.use_fixed_point = False
         self.fractional_precision = 8
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
         self.initialize(init_frame, init_position)
-
 
     #bbox: [xmin, ymin, xmax, ymax]
     def crop_search_window(self, bbox, frame, size):
@@ -90,6 +92,23 @@ class DeepMosse:
         #     window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
 
         xmin, ymin, xmax, ymax = bbox
+        if self.search_region_scale != 1:
+            width = xmax - xmin
+            height = ymax - ymin
+            x_offset = (width * self.search_region_scale - width) / 2
+            y_offset = (height * self.search_region_scale - height) / 2
+            x_pad = int(width * self.search_region_scale)
+            y_pad = int(height * self.search_region_scale)
+            frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, cv2.BORDER_REFLECT)
+
+            xmin -= x_offset
+            xmax += x_offset
+            ymin -= y_offset
+            ymax += y_offset
+            xmin = round(xmin) + x_pad
+            xmax = round(xmax) + x_pad
+            ymin = round(ymin) + y_pad
+            ymax = round(ymax) + y_pad
         window = frame[ymin : ymax, xmin : xmax, :]
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
 
@@ -120,8 +139,8 @@ class DeepMosse:
         init_gt_w = init_gt[2]
         init_gt_h = init_gt[3]
         # print('wh:', init_gt_w, init_gt_h)
-        self.x_scale = (self.FFT_SIZE//self.stride) / init_gt_w
-        self.y_scale = (self.FFT_SIZE//self.stride) / init_gt_h
+        self.x_scale = (self.FFT_SIZE//self.stride) / round(init_gt_w*self.search_region_scale)
+        self.y_scale = (self.FFT_SIZE//self.stride) / round(init_gt_h*self.search_region_scale)
         # print('scales:', self.x_scale, self.y_scale)
         # maxdim = max(init_gt_w, init_gt_h)
         # if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
@@ -158,12 +177,8 @@ class DeepMosse:
 
     def predict(self, frame):
 
-        if self.big_search_window:
-            fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
-            fi = self.pre_process(fi)
-        else:
-            fi = frame[self.clip_pos[1]:self.clip_pos[3], self.clip_pos[0]:self.clip_pos[2]]
-            fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
+        fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
+        fi = self.pre_process(fi)
         
         if self.use_fixed_point:
             # print('Hi_fixed', Fxp(Hi).info())
@@ -183,14 +198,10 @@ class DeepMosse:
 
 
     def update(self, frame):
-        # get the current fi..
-        if self.big_search_window:
-            fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
-            fi = self.pre_process(fi)
-        else:
-            fi = frame[self.clip_pos[1]:self.clip_pos[3], self.clip_pos[0]:self.clip_pos[2]]
-            fi = self.pre_process(fi, padded_size=self.FFT_SIZE)
-        # online update...
+
+        fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
+        fi = self.pre_process(fi)
+
         if self.use_fixed_point:
             fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision)
             self.Ai = self.args.lr * (self.G * np.conjugate(fftfi)) + (1 - self.args.lr) * self.Ai
@@ -231,7 +242,6 @@ class DeepMosse:
         self.clip_pos = self.clip_pos.astype(np.int64)
 
 
-    #for vot evaluation
     def track(self, image):
         
         if self.check_clip_pos():
@@ -247,11 +257,8 @@ class DeepMosse:
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
 
-        if self.big_search_window:
-            bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
-            template = self.crop_search_window(bbox, init_frame, self.FFT_SIZE)
-        else:
-            template = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
+        bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
+        template = self.crop_search_window(bbox, init_frame, self.FFT_SIZE)
 
         fi = self.pre_process(template)
         if self.use_fixed_point:
