@@ -5,6 +5,7 @@ import torch
 from torch.nn import Module
 import torchvision.models as models
 import json
+import matplotlib.pyplot as plt
 
 from finnmodels import YOLO_finn
 

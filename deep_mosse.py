@@ -37,15 +37,6 @@ class DeepMosse:
         # sys.exit()
 
         self.args = args
-        # self.sequence_path = sequence_path
-        # self.img_path = join(sequence_path, 'img')
-        # get the img lists...
-        # self.frame_lists = self._get_img_lists(self.img_path)
-        # self.frame_lists.sort()
-        self.pad_type = 'center'
-
-        self.search_region_scale = 2    # relative to object's size
-        self.args.sigma /= self.search_region_scale
         self.FFT_SIZE = FFT_SIZE
 
         self.use_fixed_point = False
@@ -54,61 +45,37 @@ class DeepMosse:
 
         self.initialize(init_frame, init_position)
 
+
     #bbox: [xmin, ymin, xmax, ymax]
     def crop_search_window(self, bbox, frame, size):
-        # if size != 0:
-        #     xmin, ymin, xmax, ymax = bbox
-        #     xdiff = size - xmax + xmin
-        #     ydiff = size - ymax + ymin
-        #     # print('diffs:', xdiff, ydiff)
-        #     win_xmin = xmin - xdiff // 2
-        #     win_xmax = xmax + xdiff // 2
-        #     if xdiff % 2 != 0:
-        #         win_xmax += 1
-        #     win_ymin = ymin - ydiff // 2
-        #     win_ymax = ymax + ydiff // 2
-        #     if ydiff % 2 != 0:
-        #         win_ymax += 1
-
-        #     # print('window:', win_xmin, win_xmax, win_ymin, win_ymax)
-        #     # to padded frame coordinates:
-        #     win_xmin += size
-        #     win_xmax += size
-        #     win_ymin += size
-        #     win_ymax += size
-
-        #     padded_frame = cv2.copyMakeBorder(frame, size, size, size, size, cv2.BORDER_CONSTANT)
-        #     # padded_frame = torch.nn.functional.pad(frame, (size, size, size, size))
-        #     # cv2.imshow('padded frame', padded_frame.astype(np.uint8))
-        #     # cv2.waitKey(0)
-        #     window = padded_frame[win_ymin : win_ymax, win_xmin : win_xmax, :]
-        #     cnn_window = self.cnn_preprocess(window)
-        #     # print('inwindow:', window.shape)
-        #     cnn_window = self.backbone(cnn_window)[0].detach()
-        #     # print('window shape:', cnn_window.shape)
-        #     # print('padded frame:', padded_frame.shape)
-        #     # sys.exit()
-        # else:
-        #     window = frame[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-
+        
         xmin, ymin, xmax, ymax = bbox
-        if self.search_region_scale != 1:
+        if self.args.search_region_scale != 1:
             width = xmax - xmin
             height = ymax - ymin
-            x_offset = (width * self.search_region_scale - width) / 2
-            y_offset = (height * self.search_region_scale - height) / 2
-            x_pad = int(width * self.search_region_scale)
-            y_pad = int(height * self.search_region_scale)
-            frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, cv2.BORDER_REFLECT)
+            x_offset = (width * self.args.search_region_scale - width) / 2
+            y_offset = (height * self.args.search_region_scale - height) / 2
+            xmin = round(xmin - x_offset)
+            xmax = round(xmax + x_offset)
+            ymin = round(ymin - y_offset)
+            ymax = round(ymax + y_offset)
 
-            xmin -= x_offset
-            xmax += x_offset
-            ymin -= y_offset
-            ymax += y_offset
-            xmin = round(xmin) + x_pad
-            xmax = round(xmax) + x_pad
-            ymin = round(ymin) + y_pad
-            ymax = round(ymax) + y_pad
+            if self.args.clip_search_region:
+                xmin = np.clip(xmin, 0, frame.shape[1])
+                xmax = np.clip(xmax, 0, frame.shape[1])
+                ymin = np.clip(ymin, 0, frame.shape[0])
+                ymax = np.clip(ymax, 0, frame.shape[0])
+            else:
+                x_pad = int(width * self.args.search_region_scale)
+                y_pad = int(height * self.args.search_region_scale)
+                frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, cv2.BORDER_REFLECT)
+                xmin += x_pad
+                xmax += x_pad
+                ymin += y_pad
+                ymax += y_pad
+
+        self.x_scale = (self.FFT_SIZE//self.stride) / (xmax - xmin)
+        self.y_scale = (self.FFT_SIZE//self.stride) / (ymax - ymin)
         window = frame[ymin : ymax, xmin : xmax, :]
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
 
@@ -121,7 +88,6 @@ class DeepMosse:
             window = window.numpy()
         else:
             window = window.transpose(2, 0, 1)
-            # print('shape:', window.shape)
 
 
         return window
@@ -139,8 +105,7 @@ class DeepMosse:
         init_gt_w = init_gt[2]
         init_gt_h = init_gt[3]
         # print('wh:', init_gt_w, init_gt_h)
-        self.x_scale = (self.FFT_SIZE//self.stride) / round(init_gt_w*self.search_region_scale)
-        self.y_scale = (self.FFT_SIZE//self.stride) / round(init_gt_h*self.search_region_scale)
+        
         # print('scales:', self.x_scale, self.y_scale)
         # maxdim = max(init_gt_w, init_gt_h)
         # if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
@@ -259,8 +224,8 @@ class DeepMosse:
 
         bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
         template = self.crop_search_window(bbox, init_frame, self.FFT_SIZE)
-
         fi = self.pre_process(template)
+
         if self.use_fixed_point:
             fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
             Ai = Fxp(G * np.conjugate(fftfi), *self.fxp_precision).get_val()
@@ -299,7 +264,6 @@ class DeepMosse:
         # get the size of the img...
         # xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
         # cv2.imshow('padded', xd.astype(np.uint8))
-
         channels, height, width = img.shape
         # print(type(img), img.shape)
         # img = np.log(img + 1)

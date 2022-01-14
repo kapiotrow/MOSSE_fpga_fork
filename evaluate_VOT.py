@@ -29,20 +29,46 @@ def show_VOT_dataset(dataset_path):
                 break
 
 
+def test_sequence(sequence):
+
+    seqdir = join(DATASET_DIR, sequence)
+    imgdir = join(seqdir, 'img')
+    imgnames = os.listdir(imgdir)                  
+    imgnames.sort()
+
+    init_img = cv2.imread(join(imgdir, imgnames[0]))
+    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
+    tracker = DeepMosse(init_img, gt_boxes[0], args)
+
+    results = []
+    for imgname in imgnames[1:]:
+        img = cv2.imread(join(imgdir, imgname))
+        position = tracker.track(img)
+        results.append(position.copy())
+
+        if args.debug:
+            cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
+            cv2.imshow('demo', img)
+            if cv2.waitKey(0) == ord('q'):
+                break
+
+    return results, gt_boxes
+
+
 parse = argparse.ArgumentParser()
 parse.add_argument('--lr', type=float, default=0.236111, help='the learning rate')
 parse.add_argument('--sigma', type=float, default=18, help='the sigma')
 parse.add_argument('--lambd', type=float, default=0.01, help='regularization parameter')
 parse.add_argument('--num_pretrain', type=int, default=0, help='the number of pretrain')
 parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
-parse.add_argument('--record', action='store_true', help='record the frames')
-parse.add_argument('--visualize', action='store_true', default=False)
 parse.add_argument('--seq', type=str, default='all')
 parse.add_argument('--params_search', action='store_true', default=False)
 parse.add_argument('--debug', action='store_true', default=False)
 parse.add_argument('--deep', action='store_true', default=False, help='whether to use deep features instead of grayscale')
+parse.add_argument('--search_region_scale', type=int, default=2)
+parse.add_argument('--clip_search_region', action='store_true', default=True, help='whether to clip search region to image borders or make a border (zero-pad or reflect)')
 args = parse.parse_args()
-
+print('args:', args)
 # show_VOT_dataset('../datasets/VOT2013')
 
 DATASET_DIR = '../datasets/VOT2013'
@@ -62,42 +88,18 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(10, 20):
+    for sigma in range(1, 20):
         for lr in list(np.linspace(0.025, 0.5, 10)):
             args.sigma = sigma
             args.lr = lr
             ious_per_sequence = {}
             for sequence in sequences:
-                # print('Testing', sequence)
-                seqdir = join(DATASET_DIR, sequence)
-                imgdir = join(seqdir, 'img')
-                imgnames = os.listdir(imgdir)                  
-                imgnames.sort()
-
-                # if args.deep:
-                tracker = DeepMosse(args, seqdir, net_config_path=NET_CONFIG, net_weights_path=NET_WEIGHTS, FFT_SIZE=224)
-                # else:
-                #     tracker = mosse(args, seqdir, FFT_SIZE=200)
-                # tracker = mosse_old(args, seqdir)
-                results = tracker.start_tracking()
-
-                gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
-                # print('results, gt:', len(results), len(gt_boxes))
+                results, gt_boxes = test_sequence(sequence)
 
                 ious = []
-                for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes):
-                    imgpath = join(imgdir, imgname)
+                for res_box, gt_box in zip(results, gt_boxes):
                     iou = bbox_iou(res_box, gt_box)
                     ious.append(iou)
-
-                    if args.visualize:
-                        img = cv2.imread(imgpath)
-                        cv2.rectangle(img, (gt_box[0], gt_box[1]), (gt_box[0]+gt_box[2], gt_box[1]+gt_box[3]), (0, 255, 0, 2))
-                        cv2.rectangle(img, (res_box[0], res_box[1]), (res_box[0]+res_box[2], res_box[1]+res_box[3]), (255, 0, 0, 2))
-                        cv2.imshow('gt', img)
-                        # print(iou)
-                        if cv2.waitKey(0) == ord('q'):
-                            break
 
                 ious_per_sequence[sequence] = np.mean(ious)
 
@@ -116,41 +118,12 @@ else:
     ious_per_sequence = {}
     for sequence in sequences:
         # print('Testing', sequence)
-        seqdir = join(DATASET_DIR, sequence)
-        imgdir = join(seqdir, 'img')
-        imgnames = os.listdir(imgdir)                  
-        imgnames.sort()
-
-        init_img = cv2.imread(join(imgdir, imgnames[0]))
-        gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
-        tracker = DeepMosse(init_img, gt_boxes[0], args)
-
-        results = []
-        for imgname in imgnames[1:]:
-            img = cv2.imread(join(imgdir, imgname))
-            position = tracker.track(img)
-            results.append(position.copy())
-
-            if args.debug:
-                cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
-                cv2.imshow('demo', img)
-                if cv2.waitKey(0) == ord('q'):
-                    break
+        results, gt_boxes = test_sequence(sequence)
 
         ious = []
-        for imgname, res_box, gt_box in zip(imgnames, results, gt_boxes[1:]):
-            imgpath = join(imgdir, imgname)
+        for res_box, gt_box in zip(results, gt_boxes[1:]):
             iou = bbox_iou(res_box, gt_box)
             ious.append(iou)
-
-            if args.visualize:
-                img = cv2.imread(imgpath)
-                cv2.rectangle(img, (gt_box[0], gt_box[1]), (gt_box[0]+gt_box[2], gt_box[1]+gt_box[3]), (0, 255, 0, 2))
-                cv2.rectangle(img, (res_box[0], res_box[1]), (res_box[0]+res_box[2], res_box[1]+res_box[3]), (255, 0, 0, 2))
-                cv2.imshow('gt', img)
-                # print(iou)
-                if cv2.waitKey(0) == ord('q'):
-                    break
 
         ious_per_sequence[sequence] = np.mean(ious)
         print(sequence, ':', np.mean(ious))
