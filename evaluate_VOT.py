@@ -40,6 +40,12 @@ def test_sequence(sequence):
     gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
     tracker = DeepMosse(init_img, gt_boxes[0], args)
 
+    if args.debug:
+        position = gt_boxes[0]
+        cv2.rectangle(init_img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
+        cv2.imshow('demo', init_img)
+        cv2.waitKey(0)
+
     results = []
     for imgname in imgnames[1:]:
         img = cv2.imread(join(imgdir, imgname))
@@ -66,7 +72,10 @@ parse.add_argument('--params_search', action='store_true', default=False)
 parse.add_argument('--debug', action='store_true', default=False)
 parse.add_argument('--deep', action='store_true', default=False, help='whether to use deep features instead of grayscale')
 parse.add_argument('--search_region_scale', type=int, default=2)
-parse.add_argument('--clip_search_region', action='store_true', default=True, help='whether to clip search region to image borders or make a border (zero-pad or reflect)')
+parse.add_argument('--clip_search_region', action='store_true', help='whether to clip search region to image borders or make a border (zero-pad or reflect)')
+parse.add_argument('--scale_factor', type=float, default=1.005)
+parse.add_argument('--num_scales', type=int, default=5)
+parse.add_argument('--border_type', type=str, default='constant', help='reflect or constant')
 args = parse.parse_args()
 print('args:', args)
 # show_VOT_dataset('../datasets/VOT2013')
@@ -88,7 +97,7 @@ best_params = []
 
 if args.params_search: 
 
-    for sigma in range(1, 20):
+    for sigma in range(9, 20):
         for lr in list(np.linspace(0.025, 0.5, 10)):
             args.sigma = sigma
             args.lr = lr

@@ -38,6 +38,13 @@ class DeepMosse:
 
         self.args = args
         self.FFT_SIZE = FFT_SIZE
+        scale_exponents = [i - np.floor(args.num_scales / 2) for i in range(args.num_scales)]
+        self.scale_multipliers = [pow(args.scale_factor, ex) for ex in scale_exponents]
+        self.target_lost = False
+        if args.border_type == 'constant':
+            self.border_type = cv2.BORDER_CONSTANT
+        elif args.border_type == 'reflect':
+            self.border_type = cv2.BORDER_REFLECT
 
         self.use_fixed_point = False
         self.fractional_precision = 8
@@ -46,13 +53,13 @@ class DeepMosse:
         self.initialize(init_frame, init_position)
 
 
-    #bbox: [xmin, ymin, xmax, ymax]
-    def crop_search_window(self, bbox, frame, size):
+    #bbox: [xmin, ymin, w, h]
+    def crop_search_window(self, bbox, frame):
         
-        xmin, ymin, xmax, ymax = bbox
+        xmin, ymin, width, height = bbox
+        xmax = xmin + width
+        ymax = ymin + height
         if self.args.search_region_scale != 1:
-            width = xmax - xmin
-            height = ymax - ymin
             x_offset = (width * self.args.search_region_scale - width) / 2
             y_offset = (height * self.args.search_region_scale - height) / 2
             xmin = round(xmin - x_offset)
@@ -60,19 +67,20 @@ class DeepMosse:
             ymin = round(ymin - y_offset)
             ymax = round(ymax + y_offset)
 
-            if self.args.clip_search_region:
-                xmin = np.clip(xmin, 0, frame.shape[1])
-                xmax = np.clip(xmax, 0, frame.shape[1])
-                ymin = np.clip(ymin, 0, frame.shape[0])
-                ymax = np.clip(ymax, 0, frame.shape[0])
-            else:
-                x_pad = int(width * self.args.search_region_scale)
-                y_pad = int(height * self.args.search_region_scale)
-                frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, cv2.BORDER_REFLECT)
-                xmin += x_pad
-                xmax += x_pad
-                ymin += y_pad
-                ymax += y_pad
+        if self.args.clip_search_region:
+            xmin = np.clip(xmin, 0, frame.shape[1])
+            xmax = np.clip(xmax, 0, frame.shape[1])
+            ymin = np.clip(ymin, 0, frame.shape[0])
+            ymax = np.clip(ymax, 0, frame.shape[0])
+        else:
+            x_pad = int(width * self.args.search_region_scale)
+            y_pad = int(height * self.args.search_region_scale)
+            frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, self.border_type)
+            xmin += x_pad
+            xmax += x_pad
+            ymin += y_pad
+            ymax += y_pad
+
 
         self.x_scale = (self.FFT_SIZE//self.stride) / (xmax - xmin)
         self.y_scale = (self.FFT_SIZE//self.stride) / (ymax - ymin)
@@ -102,10 +110,7 @@ class DeepMosse:
         self.frame_shape = init_frame.shape
         init_gt = init_position
         init_gt = np.array(init_gt).astype(np.int64)
-        init_gt_w = init_gt[2]
-        init_gt_h = init_gt[3]
         # print('wh:', init_gt_w, init_gt_h)
-        
         # print('scales:', self.x_scale, self.y_scale)
         # maxdim = max(init_gt_w, init_gt_h)
         # if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
@@ -137,12 +142,12 @@ class DeepMosse:
         # position in [x1, y1, w, h]
         # clip_pos in [x1, y1, x2, y2]
         self.position = init_gt.copy()
-        self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
+        # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
 
-    def predict(self, frame):
+    def predict(self, frame, position):
 
-        fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
+        fi = self.crop_search_window(position, frame)
         fi = self.pre_process(fi)
         
         if self.use_fixed_point:
@@ -162,9 +167,15 @@ class DeepMosse:
         return gi
 
 
+    def predict_multiscale(self, frame):
+
+        for scale in self.scale_multipliers:
+            pass
+
+
     def update(self, frame):
 
-        fi = self.crop_search_window(self.clip_pos, frame, self.FFT_SIZE)
+        fi = self.crop_search_window(self.position, frame)
         fi = self.pre_process(fi)
 
         if self.use_fixed_point:
@@ -199,21 +210,23 @@ class DeepMosse:
         self.position[0] += round(dx)
         self.position[1] += round(dy)
 
-        # trying to get the clipped position [xmin, ymin, xmax, ymax]
-        self.clip_pos[0] = np.clip(self.position[0], 0, self.frame_shape[1])
-        self.clip_pos[1] = np.clip(self.position[1], 0, self.frame_shape[0])
-        self.clip_pos[2] = np.clip(self.position[0] + self.position[2], 0, self.frame_shape[1])
-        self.clip_pos[3] = np.clip(self.position[1] + self.position[3], 0, self.frame_shape[0])
-        self.clip_pos = self.clip_pos.astype(np.int64)
+        # # trying to get the clipped position [xmin, ymin, xmax, ymax]
+        clip_xmin = np.clip(self.position[0], 0, self.frame_shape[1])
+        clip_ymin = np.clip(self.position[1], 0, self.frame_shape[0])
+        clip_xmax = np.clip(self.position[0] + self.position[2], 0, self.frame_shape[1])
+        clip_ymax = np.clip(self.position[1] + self.position[3], 0, self.frame_shape[0])
+        if clip_xmax-clip_xmin == 0 or clip_ymax-clip_ymin == 0:
+            self.target_lost = True
+        # self.clip_pos = self.clip_pos.astype(np.int64)
 
 
     def track(self, image):
         
-        if self.check_clip_pos():
-            response = self.predict(image)
+        if not self.target_lost:
+            response = self.predict(image, self.position)
             self.update_position(response)
 
-            if self.check_clip_pos():
+            if not self.target_lost:
                 self.update(image)
 
         return self.position.copy()
@@ -222,8 +235,7 @@ class DeepMosse:
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
 
-        bbox = [init_gt[0], init_gt[1], init_gt[0]+init_gt[2], init_gt[1]+init_gt[3]]
-        template = self.crop_search_window(bbox, init_frame, self.FFT_SIZE)
+        template = self.crop_search_window(init_gt, init_frame)
         fi = self.pre_process(template)
 
         if self.use_fixed_point:
@@ -239,7 +251,6 @@ class DeepMosse:
             # print('ai:', Ai.shape)
 
         for _ in range(self.args.num_pretrain):
-            # print('xd:', _, end='\r')
             if self.args.rotate:
                 fi = self.pre_process(random_warp(template))
             else:
