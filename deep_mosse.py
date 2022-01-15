@@ -54,18 +54,18 @@ class DeepMosse:
 
 
     #bbox: [xmin, ymin, w, h]
-    def crop_search_window(self, bbox, frame):
+    def crop_search_window(self, bbox, frame, scale=1):
         
         xmin, ymin, width, height = bbox
         xmax = xmin + width
         ymax = ymin + height
         if self.args.search_region_scale != 1:
-            x_offset = (width * self.args.search_region_scale - width) / 2
-            y_offset = (height * self.args.search_region_scale - height) / 2
-            xmin = round(xmin - x_offset)
-            xmax = round(xmax + x_offset)
-            ymin = round(ymin - y_offset)
-            ymax = round(ymax + y_offset)
+            x_offset = (width * scale * self.args.search_region_scale - width) / 2
+            y_offset = (height * scale * self.args.search_region_scale - height) / 2
+            xmin = xmin - x_offset
+            xmax = xmax + x_offset
+            ymin = ymin - y_offset
+            ymax = ymax + y_offset
 
         if self.args.clip_search_region:
             xmin = np.clip(xmin, 0, frame.shape[1])
@@ -82,13 +82,13 @@ class DeepMosse:
             ymax += y_pad
 
 
-        self.x_scale = (self.FFT_SIZE//self.stride) / (xmax - xmin)
-        self.y_scale = (self.FFT_SIZE//self.stride) / (ymax - ymin)
-        window = frame[ymin : ymax, xmin : xmax, :]
+        self.x_scale = (self.FFT_SIZE/self.stride) / (xmax - xmin)
+        self.y_scale = (self.FFT_SIZE/self.stride) / (ymax - ymin)
+        window = frame[round(ymin) : round(ymax), round(xmin) : round(xmax), :]
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
 
         if self.args.debug:
-            cv2.imshow('search window', window.astype(np.uint8))
+            cv2.imshow('search window {:.3f}'.format(scale), window.astype(np.uint8))
 
         if self.args.deep:
             window = self.cnn_preprocess(window)
@@ -145,9 +145,9 @@ class DeepMosse:
         # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
 
-    def predict(self, frame, position):
+    def predict(self, frame, position, scale=1):
 
-        fi = self.crop_search_window(position, frame)
+        fi = self.crop_search_window(position, frame, scale)
         fi = self.pre_process(fi)
         
         if self.use_fixed_point:
@@ -169,8 +169,16 @@ class DeepMosse:
 
     def predict_multiscale(self, frame):
 
+        best_response = 0
         for scale in self.scale_multipliers:
-            pass
+            response = self.predict(frame, self.position, scale)
+            new_position, max_response = self.update_position(response, scale)
+            if max_response > best_response:
+                best_response = max_response
+                best_position = new_position
+
+        self.position = best_position
+        print('position:', self.position)
 
 
     def update(self, frame):
@@ -194,7 +202,7 @@ class DeepMosse:
             self.Hi = self.Ai / self.Bi
 
 
-    def update_position(self, spatial_response):
+    def update_position(self, spatial_response, scale=1):
 
         gi = spatial_response
         max_value = np.max(gi)
@@ -204,11 +212,17 @@ class DeepMosse:
         dx = np.mean(max_pos[1]) - gi.shape[1] / 2
         dx /= self.x_scale
         dy /= self.y_scale
-        # print('dxy:', dx, dy)
 
-        # update the position...
-        self.position[0] += round(dx)
-        self.position[1] += round(dy)
+        new_width = self.position[2]*scale
+        new_height = self.position[3]*scale
+        dw = new_width - self.position[2]
+        dh = new_height - self.position[3]
+
+        new_xmin = self.position[0] + dx - dw/2
+        new_ymin = self.position[1] + dy - dh/2
+        new_position = [new_xmin, new_ymin, new_width, new_height]
+
+        return new_position, max_value
 
         # # trying to get the clipped position [xmin, ymin, xmax, ymax]
         clip_xmin = np.clip(self.position[0], 0, self.frame_shape[1])
@@ -223,8 +237,9 @@ class DeepMosse:
     def track(self, image):
         
         if not self.target_lost:
-            response = self.predict(image, self.position)
-            self.update_position(response)
+            # response = self.predict(image, self.position)
+            self.predict_multiscale(image)
+            # self.update_position(response)
 
             if not self.target_lost:
                 self.update(image)

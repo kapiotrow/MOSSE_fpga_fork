@@ -24,7 +24,7 @@ def show_VOT_dataset(dataset_path):
         for imgname, bbox in zip(imgnames, gt):
             img = cv2.imread(join(imgpath, imgname))
             cv2.rectangle(img, (bbox[0], bbox[1]), (bbox[0]+bbox[2], bbox[1]+bbox[3]), (255, 0, 0), 2)
-            cv2.imshow('demo', img)
+            cv2.imshow(seq, img)
             if cv2.waitKey(0) == ord('q'):
                 break
 
@@ -53,6 +53,7 @@ def test_sequence(sequence):
         results.append(position.copy())
 
         if args.debug:
+            position = [round(x) for x in position]
             cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
             cv2.imshow('demo', img)
             if cv2.waitKey(0) == ord('q'):
