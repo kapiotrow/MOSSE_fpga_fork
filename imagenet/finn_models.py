@@ -49,7 +49,7 @@ class FINNLayer(nn.Module):
                                     weight_bit_width=w_bit_width))
         self.conv_features.append(nn.ReLU(inplace=True))
         if include_pooling:
-            self.conv_features.append(nn.MaxPool2d())
+            self.conv_features.append(nn.MaxPool2d(2))
 
     def forward(self, x):
         # x = 2.0 * x - torch.tensor([1.0], device=x.device)
@@ -178,3 +178,49 @@ def vgg11(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> VGG
         progress (bool): If True, displays a progress bar of the download to stderr
     """
     return _vgg('vgg11', 'A', False, pretrained, progress, **kwargs)
+
+
+def kn_init_weights(teacher, student):
+    
+    teacher_dict = teacher.state_dict()
+    student_dict = student.state_dict()
+
+    state_dict = {}
+    for (pretrained_key, v), model_key in zip(teacher_dict.items(), student_dict.keys()):
+        print(pretrained_key, model_key)
+        state_dict[model_key] = v
+
+    student.load_state_dict(state_dict)
+
+
+# loads finnlayer weights to pretrained vgg with finnlayer
+def load_finnlayer(model, checkpoint_path):
+
+    model_dict = model.state_dict()
+    finnlayer_dict = torch.load(checkpoint_path, map_location='cuda:0')['state_dict']
+    # print(finnlayer_dict.keys())
+    target_keys = ['conv_features.1.weight', 'conv_features.1.bias']
+    for k, v in model_dict.items():
+        for target_key in target_keys:
+            if target_key in k:
+                # print(k)
+                model_dict[k] = finnlayer_dict['module.' + target_key]
+
+    model.load_state_dict(model_dict)
+
+
+def get_finnlayer(weights_path):
+
+    model = FINNLayer(8, 8, include_pooling=True)
+    weights_dict = torch.load(weights_path)['state_dict']
+
+    new_dict = {}
+    for k, v in weights_dict.items():
+        if 'module.' in k:
+            k = k.strip('module.')
+            new_dict[k] = v
+
+    model.load_state_dict(new_dict)
+    model.eval()
+
+    return model

@@ -5,3 +5,4 @@ record_frames
 datasets
 /networks
 /vot_workspace
+/output

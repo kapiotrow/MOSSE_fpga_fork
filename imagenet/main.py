@@ -5,6 +5,8 @@ import shutil
 import time
 import warnings
 from enum import Enum
+import sys
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -18,6 +20,61 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+from torch.nn import Module, ModuleList, MaxPool2d
+
+from brevitas.nn import QuantConv2d, QuantIdentity, QuantReLU
+from brevitas_examples.bnn_pynq.models.common import CommonWeightQuant, CommonActQuant
+from brevitas.core.restrict_val import RestrictValueType
+
+import finn_models
+
+
+SAVE_GAME_PERIOD = 1000
+
+# def convert_first_layer(model):
+
+#     class FINNLayer(Module):
+        
+#         def __init__(self):
+#             super(FINNLayer, self).__init__()
+
+#             self.conv_features = ModuleList()
+#             self.conv_features.append(QuantIdentity( 
+#                                         act_quant=CommonActQuant,
+#                                         bit_width=8,
+#                                         min_val=- 1.0,
+#                                         max_val=1.0 - 2.0 ** (-7),
+#                                         narrow_range=False,
+#                                         restrict_scaling_type=RestrictValueType.POWER_OF_TWO))
+#             self.conv_features.append(QuantConv2d(
+#                 kernel_size=3,
+#                 in_channels=3,
+#                 out_channels=64,
+#                 padding=1,
+#                 stride=1,
+#                 bias=True,
+#                 weight_quant=CommonWeightQuant,
+#                 weight_bit_width=16))
+#             self.conv_features.append(QuantReLU())
+#             self.conv_features.append(MaxPool2d(kernel_size=2))
+
+#         def forward(self, x):
+#             # x = 2.0 * x - torch.tensor([1.0], device=x.device)
+#             for mod in self.conv_features:
+#                 x = mod(x)
+
+#             return x
+
+#     features_first = model.features[:3]
+#     features_rest = model.features[3:]
+#     quant_layer = FINNLayer()
+#     quant_layer.conv_features[1].weight = features_first[0].weight
+#     quant_layer.conv_features[1].bias = features_first[0].bias
+#     new_backbone = nn.Sequential(quant_layer, features_rest)
+#     model.features = new_backbone
+
+#     return model
+
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -26,23 +83,23 @@ model_names = sorted(name for name in models.__dict__
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
+parser.add_argument('-a', '--arch', metavar='ARCH', default='vgg11',
                     choices=model_names,
                     help='model architecture: ' +
                         ' | '.join(model_names) +
                         ' (default: resnet18)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
+parser.add_argument('--epochs', default=1, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
+parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
+parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
@@ -74,6 +131,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--knowledge_transfer', action='store_true')
 
 best_acc1 = 0
 
@@ -132,10 +190,21 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     if args.pretrained:
         print("=> using pre-trained model '{}'".format(args.arch))
-        model = models.__dict__[args.arch](pretrained=True)
     else:
         print("=> creating model '{}'".format(args.arch))
-        model = models.__dict__[args.arch]()
+
+    if args.knowledge_transfer:
+        teacher_model = models.__dict__[args.arch](pretrained=True)
+        teacher_model = teacher_model.features[:3]
+        model = finn_models.FINNLayer(8, 8, include_pooling=True)
+        finn_models.kn_init_weights(teacher_model, model)
+    else:
+        model = finn_models.vgg11(pretrained=args.pretrained)
+        # print('przed:')
+        # print(model.state_dict()['features.0.conv_features.1.weight'])
+        
+        # print('po:')
+        # print(model.state_dict()['features.0.conv_features.1.weight'])
 
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
@@ -162,18 +231,30 @@ def main_worker(gpu, ngpus_per_node, args):
         model = model.cuda(args.gpu)
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
-        if args.arch.startswith('alexnet') or args.arch.startswith('vgg'):
+        if not args.knowledge_transfer and ( args.arch.startswith('alexnet') or args.arch.startswith('vgg') ):
             model.features = torch.nn.DataParallel(model.features)
             model.cuda()
         else:
             model = torch.nn.DataParallel(model).cuda()
+        if args.knowledge_transfer:
+            teacher_model = torch.nn.DataParallel(teacher_model).cuda()
 
     # define loss function (criterion) and optimizer
-    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    if args.knowledge_transfer:
+        criterion = nn.MSELoss().cuda(args.gpu)
+        optimizer = torch.optim.SGD(model.parameters(), args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
+    else:
+        criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+        param_group = []
+        for k, v in model.named_parameters():
+            if 'conv_features' in k:
+                param_group.append(v)
+        
+        optimizer = torch.optim.SGD(param_group, args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -187,10 +268,14 @@ def main_worker(gpu, ngpus_per_node, args):
                 checkpoint = torch.load(args.resume, map_location=loc)
             args.start_epoch = checkpoint['epoch']
             best_acc1 = checkpoint['best_acc1']
-            if args.gpu is not None:
-                # best_acc1 may be from a checkpoint from a different GPU
-                best_acc1 = best_acc1.to(args.gpu)
-            model.load_state_dict(checkpoint['state_dict'])
+            # if args.gpu is not None:
+            #     # best_acc1 may be from a checkpoint from a different GPU
+            #     best_acc1 = best_acc1.to(args.gpu)
+            # model.load_state_dict(checkpoint['state_dict'])
+            # print(model.state_dict().keys())
+            # print(model.state_dict()['features.0.conv_features.1.weight'].device)
+            finn_models.load_finnlayer(model, args.resume)
+            print(model.state_dict()['features.0.conv_features.1.weight'].device)
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
@@ -243,10 +328,12 @@ def main_worker(gpu, ngpus_per_node, args):
         adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
-
-        # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args)
+        if args.knowledge_transfer:
+            train_kn(train_loader, teacher_model, model, criterion, optimizer, epoch, args)
+            acc1 = validate_kn(val_loader, teacher_model, model, criterion, args)
+        else:
+            train(train_loader, model, criterion, optimizer, epoch, args)
+            acc1 = validate(val_loader, model, criterion, args)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
@@ -261,6 +348,59 @@ def main_worker(gpu, ngpus_per_node, args):
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
             }, is_best)
+
+
+def train_kn(train_loader, teacher_model, student_model, criterion, optimizer, epoch, args):
+    batch_time = AverageMeter('Time', ':6.3f')
+    data_time = AverageMeter('Data', ':6.3f')
+    losses = AverageMeter('Loss', ':.4e')
+    progress = ProgressMeter(
+        len(train_loader),
+        [batch_time, data_time, losses],
+        prefix="Epoch: [{}]".format(epoch))
+
+    # switch to train mode
+    student_model.train()
+
+    end = time.time()
+    for i, (images, target) in enumerate(train_loader):
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        if args.gpu is not None:
+            images = images.cuda(args.gpu, non_blocking=True)
+        if torch.cuda.is_available():
+            target = target.cuda(args.gpu, non_blocking=True)
+
+        # compute output
+        output = student_model(images)
+        target = teacher_model(images)
+        loss = criterion(output, target)
+
+        # measure accuracy and record loss
+        losses.update(loss.item(), images.size(0))
+
+        # compute gradient and do SGD step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % args.print_freq == 0:
+            progress.display(i)
+
+        if i % SAVE_GAME_PERIOD == 0 and i != 0:
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'arch': args.arch,
+                'state_dict': student_model.state_dict(),
+                'best_acc1': best_acc1,
+                'optimizer' : optimizer.state_dict(),
+            }, False, filename='savegame_{}_{}.pth.tar'.format(epoch, i))
+
 
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
@@ -308,6 +448,46 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         if i % args.print_freq == 0:
             progress.display(i)
+
+
+def validate_kn(val_loader, teacher_model, student_model, criterion, args):
+    batch_time = AverageMeter('Time', ':6.3f', Summary.NONE)
+    losses = AverageMeter('Loss', ':.4e', Summary.NONE)
+    progress = ProgressMeter(
+        len(val_loader),
+        [batch_time, losses],
+        prefix='Test: ')
+
+    # switch to evaluate mode
+    student_model.eval()
+
+    with torch.no_grad():
+        end = time.time()
+        for i, (images, target) in enumerate(val_loader):
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+            if torch.cuda.is_available():
+                target = target.cuda(args.gpu, non_blocking=True)
+
+            # compute output
+            output = student_model(images)
+            target = teacher_model(images)
+            loss = criterion(output, target)
+
+            # measure accuracy and record loss
+            losses.update(loss.item(), images.size(0))
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % args.print_freq == 0:
+                progress.display(i)
+
+        progress.display_summary()
+
+    return 1/losses.avg
+
 
 
 def validate(val_loader, model, criterion, args):

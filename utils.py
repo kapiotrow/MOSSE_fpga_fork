@@ -167,13 +167,20 @@ def window_func_2d(height, width):
 
     return win
 
-def random_warp(img):
+# img in [C, H, W] shape
+def random_warp(img, i='0'):
     a = -180 / 16
     b = 180 / 16
     r = a + (b - a) * np.random.uniform()
-    shape = img.shape
+
+    channels, height, width = img.shape
+    img = img.transpose(1, 2, 0)
     img_rot = imutils.rotate_bound(img, r)
-    img_resized = cv2.resize(img_rot, (shape[1], shape[0]))
+    img_resized = cv2.resize(img_rot, (width, height))
+    # cv2.imshow(i+' sample', img_resized)
+    if channels == 1:
+        img_resized = np.expand_dims(img_resized, axis=0)
+    # print('shape:', img_resized.shape)
     # rotate the image...
     # matrix_rot = cv2.getRotationMatrix2D((img.shape[1]/2, img.shape[0]/2), r, 1)
     # img_rot = cv2.warpAffine(np.uint8(img * 255), matrix_rot, (img.shape[1], img.shape[0]))

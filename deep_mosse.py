@@ -10,7 +10,7 @@ from fxpmath import Fxp
 import cv2
 
 from utils import get_VGG_backbone, linear_mapping, random_warp, pad_img, load_gt, window_func_2d, pre_process, get_CF_backbone
-
+from imagenet.finn_models import get_finnlayer
 
 # FFT_SIZE = 200
 
@@ -25,11 +25,17 @@ Date: 2018-05-28
 
 class DeepMosse:
     def __init__(self, init_frame, init_position, args, FFT_SIZE=224):
-        # get arguments..
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         if args.deep:
-            # print('its so deep')  
-            self.backbone = get_VGG_backbone()
+            # print('args:', args)  
+            self.backbone_device = torch.device('cuda:0')
+            if args.quantized:
+                self.backbone = get_finnlayer('output/finnlayer_weights/savegame_0_15000.pth.tar')
+            else:
+                self.backbone = get_VGG_backbone()
+            self.backbone.to(self.backbone_device)
+            # print('backbone:', self.backbone)
+            # sys.exit()
             self.stride = 2
         else:
             # print('your regular boy')
@@ -45,6 +51,8 @@ class DeepMosse:
             self.border_type = cv2.BORDER_CONSTANT
         elif args.border_type == 'reflect':
             self.border_type = cv2.BORDER_REFLECT
+        elif args.border_type == 'replicate':
+            self.border_type = cv2.BORDER_REPLICATE
 
         self.use_fixed_point = False
         self.fractional_precision = 8
@@ -54,7 +62,7 @@ class DeepMosse:
 
 
     #bbox: [xmin, ymin, w, h]
-    def crop_search_window(self, bbox, frame, scale=1):
+    def crop_search_window(self, bbox, frame, scale=1, debug='test'):
         
         xmin, ymin, width, height = bbox
         xmax = xmin + width
@@ -88,13 +96,16 @@ class DeepMosse:
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
 
         if self.args.debug:
-            cv2.imshow('search window {:.3f}'.format(scale), window.astype(np.uint8))
+            cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
 
         if self.args.deep:
             window = self.cnn_preprocess(window)
             window = self.backbone(window)[0].detach()
-            window = window.numpy()
+            window = window.cpu().numpy()
         else:
+            window = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY)
+            window = np.expand_dims(window, axis=2)
+            # print('the shape:', window.shape)
             window = window.transpose(2, 0, 1)
 
 
@@ -147,9 +158,11 @@ class DeepMosse:
 
     def predict(self, frame, position, scale=1):
 
-        fi = self.crop_search_window(position, frame, scale)
+        fi = self.crop_search_window(position, frame, scale, debug='predict')
         fi = self.pre_process(fi)
         
+        # print(self.Hi.dtype, self.Hi.shape)
+
         if self.use_fixed_point:
             # print('Hi_fixed', Fxp(Hi).info())
             Gi = self.Hi * Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
@@ -171,6 +184,7 @@ class DeepMosse:
 
         best_response = 0
         for scale in self.scale_multipliers:
+            # print('scale:', scale)
             response = self.predict(frame, self.position, scale)
             new_position, max_response = self.update_position(response, scale)
             if max_response > best_response:
@@ -178,12 +192,12 @@ class DeepMosse:
                 best_position = new_position
 
         self.position = best_position
-        print('position:', self.position)
+        # print('position:', self.position)
 
 
     def update(self, frame):
 
-        fi = self.crop_search_window(self.position, frame)
+        fi = self.crop_search_window(self.position, frame, debug='update')
         fi = self.pre_process(fi)
 
         if self.use_fixed_point:
@@ -224,6 +238,8 @@ class DeepMosse:
 
         return new_position, max_value
 
+
+    def check_position(self):
         # # trying to get the clipped position [xmin, ymin, xmax, ymax]
         clip_xmin = np.clip(self.position[0], 0, self.frame_shape[1])
         clip_ymin = np.clip(self.position[1], 0, self.frame_shape[0])
@@ -240,6 +256,7 @@ class DeepMosse:
             # response = self.predict(image, self.position)
             self.predict_multiscale(image)
             # self.update_position(response)
+            self.check_position()
 
             if not self.target_lost:
                 self.update(image)
@@ -267,7 +284,7 @@ class DeepMosse:
 
         for _ in range(self.args.num_pretrain):
             if self.args.rotate:
-                fi = self.pre_process(random_warp(template))
+                fi = self.pre_process(random_warp(template, str(_)))
             else:
                 fi = self.pre_process(template)
 
@@ -306,8 +323,6 @@ class DeepMosse:
 
         # img, _ = pad_img(img, padded_size, pad_type=self.pad_type)
 
-        # print('img shape:', img.shape)
-
         return img
 
 
@@ -327,8 +342,9 @@ class DeepMosse:
         ])
         result = transform(data)
         result = result.unsqueeze(dim=0)
+        result = result.to(self.backbone_device)
 
-        # print('result:', result.shape)
+        # print('result:', result.device)
 
         return result
 
