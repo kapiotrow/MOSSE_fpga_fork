@@ -22,15 +22,56 @@ Date: 2018-05-28
 
 """
 
+def quant(x, mul):
+    q = np.round(x / mul)
+
+    # test = np.load('output_packed_valid.npy')
+    # test = test.squeeze()
+    # print(q.shape, test.shape)
+    # print('same:', np.unique(np.isclose(q, test.transpose(2, 0, 1))))
+    # print(q[:, 0, 0])
+    
+    return q
+
+
+def quantize_param(x, bits, range, outfile):
+
+    scale = range / (2**bits - 1)
+    q = np.round(x / scale)
+    q = q.flatten().astype(np.uint32)
+    result = ''.join([np.binary_repr(el, width=bits) + '\n' for el in q])[:-1]
+    with open(outfile, 'w') as result_file:
+        result_file.write(result)
+
+
+def quantize_fi(x, signed, int_bits, frac_bits, outfile):
+
+    x = Fxp(x, signed, int_bits + frac_bits, frac_bits)
+    test = x.get_val()
+    content = 'memory_initialization_radix=2;\n'
+    content += 'memory_initialization_vector=\n'
+    sys.exit()
+
+    for row in x:
+        for el in row:
+            content += el.bin() + '\n'
+    content += ';'
+
+    with open(outfile, 'w') as result_file:
+        result_file.write(content)
+    
+
 
 class DeepMosse:
-    def __init__(self, init_frame, init_position, args, FFT_SIZE=224):
+    def __init__(self, init_frame, init_position, args, FFT_SIZE=256):
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         if args.deep:
             # print('args:', args)  
             self.backbone_device = torch.device('cuda:0')
             if args.quantized:
-                self.backbone = get_finnlayer('output/finnlayer_weights/savegame_0_15000.pth.tar')
+                self.use_quant_features = True
+                self.quant_scaling = np.load('Mul_0_param0.npy')
+                self.backbone = get_finnlayer('output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
             else:
                 self.backbone = get_VGG_backbone()
             self.backbone.to(self.backbone_device)
@@ -92,22 +133,30 @@ class DeepMosse:
 
         self.x_scale = (self.FFT_SIZE/self.stride) / (xmax - xmin)
         self.y_scale = (self.FFT_SIZE/self.stride) / (ymax - ymin)
-        window = frame[round(ymin) : round(ymax), round(xmin) : round(xmax), :]
+        window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
         window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
+        # np.save('test_input_256x256.npy', window)
+        # cv2.imwrite('test_input_{}x{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
+        # sys.exit()
 
         if self.args.debug:
             cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
 
         if self.args.deep:
+            # print(window[:, :, 0])
+            # print(window[:, :, 1])
+            # print(window[:, :, 2])
             window = self.cnn_preprocess(window)
             window = self.backbone(window)[0].detach()
             window = window.cpu().numpy()
+            if self.args.quantized and self.use_quant_features:
+                window = quant(window, self.quant_scaling)
+                print('out:', window[0].shape, window[0])
         else:
             window = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY)
             window = np.expand_dims(window, axis=2)
             # print('the shape:', window.shape)
             window = window.transpose(2, 0, 1)
-
 
         return window
 
@@ -149,6 +198,10 @@ class DeepMosse:
             self.Hi = Fxp(self.Ai / self.Bi, *self.fxp_precision)
         else:
             self.Hi = self.Ai / self.Bi
+            # print(self.Ai.shape, self.Bi.shape, self.Hi.shape)
+            # print('ai:', self.Ai[:, 0, 0])
+            # print('bi:', self.Bi[0, 0])
+            # print('hi:', self.Hi[:, 0, 0])
 
         # position in [x1, y1, w, h]
         # clip_pos in [x1, y1, x2, y2]
@@ -211,9 +264,14 @@ class DeepMosse:
             self.Hi = Fxp(self.Ai.get_val() / self.Bi.get_val(), *self.fxp_precision)
         else:
             fftfi = np.fft.fft2(fi)
+            xd = fftfi * np.conjugate(fftfi)
+            # print('fftfi:', xd[0, :10, :10])
             self.Ai = self.args.lr * (np.conjugate(self.G) * fftfi) + (1 - self.args.lr) * self.Ai
             self.Bi = self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0)) + (1 - self.args.lr) * self.Bi
             self.Hi = self.Ai / self.Bi
+            # print('ai:', self.Ai[0, :10, :10])
+            # print('bi:', self.Bi[:10, :10])
+            # print('hi:', self.Hi[0, :10, :10])
 
 
     def update_position(self, spatial_response, scale=1):
@@ -261,13 +319,15 @@ class DeepMosse:
             if not self.target_lost:
                 self.update(image)
 
-        return self.position.copy()
+        return [int(el) for el in self.position]
         
 
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
 
         template = self.crop_search_window(init_gt, init_frame)
+        # quant(template, 'Mul_0_param0.npy')
+        # print('template:', template)
         fi = self.pre_process(template)
 
         if self.use_fixed_point:
@@ -314,6 +374,9 @@ class DeepMosse:
         # img = (img - np.mean(img)) / (np.std(img) + 1e-5)
 
         window = window_func_2d(height, width)
+        # quantize_param(window, bits=32, range=1, outfile="my_hann32_{}x{}.coe".format(height, width))
+        # quantize_fi(window, False, 0, 16, "my_hann16_{}x{}.coe".format(height, width))
+        # sys.exit()
         # print('window:', window.shape)
         if self.use_fixed_point:
             img = Fxp(img, *self.fxp_precision) * Fxp(window, *self.fxp_precision)

@@ -25,7 +25,7 @@ model_urls = {
 
 class FINNLayer(nn.Module):
     
-    def __init__(self, w_bit_width, a_bit_width, include_pooling=False):
+    def __init__(self, w_bit_width, a_bit_width, channels=64, include_pooling=False):
         super(FINNLayer, self).__init__()
 
         self.conv_features = nn.ModuleList()
@@ -41,20 +41,27 @@ class FINNLayer(nn.Module):
         self.conv_features.append(QuantConv2d(
                                     kernel_size=3,
                                     in_channels=3,
-                                    out_channels=64,
+                                    out_channels=channels,
                                     padding=1,
                                     stride=1,
                                     bias=True,
                                     weight_quant=CommonWeightQuant,
                                     weight_bit_width=w_bit_width))
-        self.conv_features.append(nn.ReLU(inplace=True))
+        self.conv_features.append(QuantReLU(inplace=True))
+        # self.conv_features.append(nn.ReLU(inplace=True))
         if include_pooling:
             self.conv_features.append(nn.MaxPool2d(2))
 
     def forward(self, x):
         # x = 2.0 * x - torch.tensor([1.0], device=x.device)
         for mod in self.conv_features:
+            # if isinstance(mod, type(nn.ReLU())) or isinstance(mod, type(QuantReLU())):
+            #     print('pre:')
+            #     print(x)
             x = mod(x)
+            # if isinstance(mod, type(nn.ReLU())) or isinstance(mod, type(QuantReLU())):
+            #     print('post:')
+            #     print(x)
 
         return x
 
@@ -209,9 +216,9 @@ def load_finnlayer(model, checkpoint_path):
     model.load_state_dict(model_dict)
 
 
-def get_finnlayer(weights_path):
+def get_finnlayer(weights_path, channels=64, strict=True):
 
-    model = FINNLayer(8, 8, include_pooling=True)
+    model = FINNLayer(4, 4, channels, include_pooling=True)
     weights_dict = torch.load(weights_path)['state_dict']
 
     new_dict = {}
@@ -220,7 +227,7 @@ def get_finnlayer(weights_path):
             k = k.strip('module.')
             new_dict[k] = v
 
-    model.load_state_dict(new_dict)
+    model.load_state_dict(new_dict, strict=strict)
     model.eval()
 
     return model
