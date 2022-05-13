@@ -82,9 +82,9 @@ def test_sequence(sequence):
     imgnames = os.listdir(imgdir)                  
     imgnames.sort()
 
-    print('xd:', join(imgdir, imgnames[0]))
+    print('init frame:', join(imgdir, imgnames[0]))
     init_img = cv2.imread(join(imgdir, imgnames[0]))
-    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
+    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'), standard='vot2015')
     tracker = DeepMosse(init_img, gt_boxes[0], args)
 
     if args.debug:
@@ -96,6 +96,8 @@ def test_sequence(sequence):
     results = []
     for imgname in imgnames[1:]:
         img = cv2.imread(join(imgdir, imgname))
+        frame_num = int(imgname.split('.')[0])
+        # print(imgname)
 
         # start = time.time()
         position = tracker.track(img)
@@ -109,6 +111,7 @@ def test_sequence(sequence):
             cv2.imshow('demo', img)
             if cv2.waitKey(0) == ord('q'):
                 break
+
 
     return results, gt_boxes
 
@@ -133,12 +136,12 @@ args = parse.parse_args()
 print('args:', args)
 
 # DATASET_DIR = '../datasets/VOT2013'
-DATASET_DIR = 'vot_workspace2013/sequences'
-CONV_NETWORK_NAME = 'yolo_finn_6conv_8w8a_160x320_5anchors'
-NET_CONFIG = join('networks', CONV_NETWORK_NAME, 'config.json')
-NET_WEIGHTS = join('networks', CONV_NETWORK_NAME, 'test_best.pt')
+DATASET_DIR = 'vot_workspace/sequences'
+# CONV_NETWORK_NAME = 'yolo_finn_6conv_8w8a_160x320_5anchors'
+# NET_CONFIG = join('networks', CONV_NETWORK_NAME, 'config.json')
+# NET_WEIGHTS = join('networks', CONV_NETWORK_NAME, 'test_best.pt')
 
-show_VOT_dataset(DATASET_DIR, draw_trajectory=False, standard='vot2013', mosaic=True)
+# show_VOT_dataset(DATASET_DIR, draw_trajectory=False, standard='vot2013', mosaic=True)
 
 if args.seq == 'all':
     sequences = os.listdir(DATASET_DIR)

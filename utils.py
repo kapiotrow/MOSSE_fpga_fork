@@ -65,7 +65,7 @@ def pre_process(img):
     return img
 
 
-def load_gt(gt_file):
+def load_gt(gt_file, format='xyxy', standard='vot2013'):
 
     with open(gt_file, 'r') as file:
         lines = file.readlines()
@@ -77,8 +77,14 @@ def load_gt(gt_file):
             lines = [line.split(d) for line in lines]
             break
     lines = [[int(float(coord)) for coord in line] for line in lines]
+    
+    if standard == 'vot2013':
+        result = lines
+    else:
+        result = [[line[0], line[1], line[2]-line[0], line[5]-line[1]] for line in lines]
 
-    return lines
+    # returns in xywh format
+    return result
 
 
 def bbox_iou(box1, box2):

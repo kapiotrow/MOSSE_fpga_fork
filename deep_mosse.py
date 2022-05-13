@@ -63,25 +63,41 @@ def quantize_fi(x, signed, int_bits, frac_bits, outfile):
 
 
 class DeepMosse:
-    def __init__(self, init_frame, init_position, args, FFT_SIZE=256):
+    def __init__(self, init_frame, init_position, args, FFT_SIZE=224, buffer_features=True):
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         if args.deep:
-            # print('args:', args)  
             self.backbone_device = torch.device('cuda:0')
+            self.channels = 64
             if args.quantized:
+                print('ITS SO DEEP QUANTIZED')
                 self.use_quant_features = True
-                self.quant_scaling = np.load('Mul_0_param0.npy')
-                self.backbone = get_finnlayer('output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
+                self.quant_scaling = np.load('/home/magister/CF_tracking/MOSSE_fpga/Mul_0_param0.npy')
+                self.backbone = get_finnlayer('/home/magister/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', self.channels, strict=False)
             else:
                 self.backbone = get_VGG_backbone()
             self.backbone.to(self.backbone_device)
-            # print('backbone:', self.backbone)
-            # sys.exit()
             self.stride = 2
         else:
             # print('your regular boy')
+            self.channels = 1
             self.stride = 1
-        # sys.exit()
+        self.features_width = FFT_SIZE//self.stride            
+
+        #buffer features during prediction for update
+        self.buffer_features_for_update = buffer_features
+        self.buffered_padding = 64  #in features dimensions
+        self.buffered_features_shape = (args.num_scales,
+                                        self.channels,
+                                        FFT_SIZE//self.stride + 2*self.buffered_padding,
+                                        FFT_SIZE//self.stride + 2*self.buffered_padding)
+        self.buffered_features = np.zeros(self.buffered_features_shape, dtype=np.float32)
+        self.buffered_windows = np.zeros((args.num_scales,
+                                          2*self.buffered_padding*self.stride + FFT_SIZE,
+                                          2*self.buffered_padding*self.stride + FFT_SIZE,
+                                          3), dtype=np.uint8)
+        print('buffer features: {}, padding {}'.format(buffer_features, self.buffered_padding))
+        # print("buffered windows dtype:", self.buffered_windows.dtype)
+        # print("buffered features dtype:", self.buffered_features.dtype)
 
         self.args = args
         self.FFT_SIZE = FFT_SIZE
@@ -103,9 +119,10 @@ class DeepMosse:
 
 
     #bbox: [xmin, ymin, w, h]
-    def crop_search_window(self, bbox, frame, scale=1, debug='test'):
+    def crop_search_window(self, bbox, frame, scale=1, debug='test', scale_idx=0, ignore_buffering=False):
         
         xmin, ymin, width, height = bbox
+        # print('bbox:', bbox)
         xmax = xmin + width
         ymax = ymin + height
         if self.args.search_region_scale != 1:
@@ -116,12 +133,7 @@ class DeepMosse:
             ymin = ymin - y_offset
             ymax = ymax + y_offset
 
-        if self.args.clip_search_region:
-            xmin = np.clip(xmin, 0, frame.shape[1])
-            xmax = np.clip(xmax, 0, frame.shape[1])
-            ymin = np.clip(ymin, 0, frame.shape[0])
-            ymax = np.clip(ymax, 0, frame.shape[0])
-        else:
+        if not self.args.clip_search_region:
             x_pad = int(width * self.args.search_region_scale)
             y_pad = int(height * self.args.search_region_scale)
             frame = cv2.copyMakeBorder(frame, y_pad, y_pad, x_pad, x_pad, self.border_type)
@@ -129,18 +141,58 @@ class DeepMosse:
             xmax += x_pad
             ymin += y_pad
             ymax += y_pad
+        xmin = np.clip(xmin, 0, frame.shape[1])
+        xmax = np.clip(xmax, 0, frame.shape[1])
+        ymin = np.clip(ymin, 0, frame.shape[0])
+        ymax = np.clip(ymax, 0, frame.shape[0])
 
-
+        # scaling from image dimensions to features dimensions - for calculating displacement later
         self.x_scale = (self.FFT_SIZE/self.stride) / (xmax - xmin)
         self.y_scale = (self.FFT_SIZE/self.stride) / (ymax - ymin)
-        window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
-        window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
-        # np.save('test_input_256x256.npy', window)
-        # cv2.imwrite('test_input_{}x{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
-        # sys.exit()
 
-        if self.args.debug:
-            cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
+        if self.buffer_features_for_update and not ignore_buffering:
+            # computing additional context in image dimensions to achieve <self.buffered_padding> in features dimensions
+            # and maintain self.x_scale, self.y_scale
+            window_widen = 2*self.buffered_padding*self.stride
+            dw = (self.FFT_SIZE + window_widen) / (self.x_scale*self.stride) - (xmax - xmin)
+            dh = (self.FFT_SIZE + window_widen) / (self.y_scale*self.stride) - (ymax - ymin)
+            dw /= 2
+            dh /= 2
+            xmin = np.clip(xmin-dw, 0, frame.shape[1])
+            xmax = np.clip(xmax+dw, 0, frame.shape[1])
+            ymin = np.clip(ymin-dh, 0, frame.shape[0])
+            ymax = np.clip(ymax+dh, 0, frame.shape[0])
+            window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
+            # print('window shape:', window.shape)
+            # print('window position:', ymin-dh, ymax+dh)
+            window = cv2.resize(window, (self.FFT_SIZE + window_widen, self.FFT_SIZE + window_widen))
+            # cropped_window = window[self.stride*self.buffered_padding : -self.stride*self.buffered_padding,
+            #                         self.stride*self.buffered_padding : -self.stride*self.buffered_padding,
+            #                         :]
+            self.buffered_windows[scale_idx] = window
+            if self.args.debug:
+                cv2.imshow('{} wider search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
+        else:
+            window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
+            window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
+            if self.args.debug:
+                cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
+            # np.save('test_input_256x256.npy', window)
+            # cv2.imwrite('test_input_{}x{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
+            # sys.exit()
+
+        window = self.extract_features(window)
+ 
+        if self.buffer_features_for_update and not ignore_buffering:
+            self.buffered_features[scale_idx] = window
+            window = window[:,
+                            self.buffered_padding : -self.buffered_padding,
+                            self.buffered_padding : -self.buffered_padding]
+
+        return window
+
+
+    def extract_features(self, window):
 
         if self.args.deep:
             # print(window[:, :, 0])
@@ -151,7 +203,7 @@ class DeepMosse:
             window = window.cpu().numpy()
             if self.args.quantized and self.use_quant_features:
                 window = quant(window, self.quant_scaling)
-                print('out:', window[0].shape, window[0])
+                # print('out:', window[0].shape, window[0])
         else:
             window = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY)
             window = np.expand_dims(window, axis=2)
@@ -162,23 +214,11 @@ class DeepMosse:
 
 
     def initialize(self, init_frame, init_position):
-
-        # get the image of the first frame... (read as gray scale image...)
-        # gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
-        # init_frame = cv2.imread(self.frame_lists[0])
        
         self.frame_shape = init_frame.shape
         init_gt = init_position
         init_gt = np.array(init_gt).astype(np.int64)
-        # print('wh:', init_gt_w, init_gt_h)
-        # print('scales:', self.x_scale, self.y_scale)
-        # maxdim = max(init_gt_w, init_gt_h)
-        # if maxdim > self.FFT_SIZE and self.FFT_SIZE != 0:
-        #     # print('Warning, FFT_SIZE changed to ', maxdim)
-        #     self.FFT_SIZE = maxdim
-        # init_frame = img_features
 
-        # start to draw the gaussian response...
         g = self._get_gauss_response(self.FFT_SIZE//self.stride)
         # cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
@@ -209,9 +249,10 @@ class DeepMosse:
         # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
 
-    def predict(self, frame, position, scale=1):
+    def predict(self, frame, position, scale=1, scale_idx=None):
 
-        fi = self.crop_search_window(position, frame, scale, debug='predict')
+        fi = self.crop_search_window(position, frame, scale, debug='predict', scale_idx=scale_idx)
+        # print('predict shape:', fi.shape)
         fi = self.pre_process(fi)
         
         # print(self.Hi.dtype, self.Hi.shape)
@@ -236,13 +277,16 @@ class DeepMosse:
     def predict_multiscale(self, frame):
 
         best_response = 0
-        for scale in self.scale_multipliers:
+        for scale_idx, scale in enumerate(self.scale_multipliers):
             # print('scale:', scale)
-            response = self.predict(frame, self.position, scale)
-            new_position, max_response = self.update_position(response, scale)
+            response = self.predict(frame, self.position, scale, scale_idx=scale_idx)
+            new_position, max_response, features_displacement = self.update_position(response, scale)
             if max_response > best_response:
                 best_response = max_response
                 best_position = new_position
+                if self.buffer_features_for_update:
+                    self.best_scale_idx = scale_idx
+                    self.best_features_displacement = features_displacement
 
         self.position = best_position
         # print('position:', self.position)
@@ -250,7 +294,30 @@ class DeepMosse:
 
     def update(self, frame):
 
-        fi = self.crop_search_window(self.position, frame, debug='update')
+        if self.buffer_features_for_update:
+            # window = self.buffered_windows[self.best_scale_idx]
+            # x_win = self.buffered_padding*self.stride + self.best_features_displacement[0]*self.stride
+            # y_win = self.buffered_padding*self.stride + self.best_features_displacement[1]*self.stride
+            # cropped_window = window[y_win : y_win+self.FFT_SIZE, 
+            #                         x_win : x_win+self.FFT_SIZE,
+            #                         :]
+            # cv2.imshow('cropped search window', cropped_window.astype(np.uint8))
+            # fi = self.extract_features(cropped_window)
+            fi = self.buffered_features[self.best_scale_idx]
+            x_position_in_window = self.buffered_padding + self.best_features_displacement[0]
+            y_position_in_window = self.buffered_padding + self.best_features_displacement[1]
+
+            if np.abs(self.best_features_displacement[0]) > self.buffered_padding or np.abs(self.best_features_displacement[1]) > self.buffered_padding:
+                print('DISPLACEMENT {}, {} BIGGER THAN FEATURES PADDING, CLIPPING...'.format(*self.best_features_displacement))
+                x_position_in_window = np.clip(x_position_in_window, 0, 2*self.buffered_padding)
+                y_position_in_window = np.clip(y_position_in_window, 0, 2*self.buffered_padding)
+            
+            fi = fi[:,
+                    y_position_in_window : y_position_in_window+self.features_width,
+                    x_position_in_window : x_position_in_window+self.features_width]
+        else:
+            fi = self.crop_search_window(self.position, frame, debug='update', ignore_buffering=True)
+            # print('update features dtype:', fi.dtype)
         fi = self.pre_process(fi)
 
         if self.use_fixed_point:
@@ -269,9 +336,7 @@ class DeepMosse:
             self.Ai = self.args.lr * (np.conjugate(self.G) * fftfi) + (1 - self.args.lr) * self.Ai
             self.Bi = self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0)) + (1 - self.args.lr) * self.Bi
             self.Hi = self.Ai / self.Bi
-            # print('ai:', self.Ai[0, :10, :10])
-            # print('bi:', self.Bi[:10, :10])
-            # print('hi:', self.Hi[0, :10, :10])
+
 
 
     def update_position(self, spatial_response, scale=1):
@@ -282,6 +347,7 @@ class DeepMosse:
 
         dy = np.mean(max_pos[0]) - gi.shape[0] / 2
         dx = np.mean(max_pos[1]) - gi.shape[1] / 2
+        features_displacement = (int(dx), int(dy))
         dx /= self.x_scale
         dy /= self.y_scale
 
@@ -294,7 +360,7 @@ class DeepMosse:
         new_ymin = self.position[1] + dy - dh/2
         new_position = [new_xmin, new_ymin, new_width, new_height]
 
-        return new_position, max_value
+        return new_position, max_value, features_displacement
 
 
     def check_position(self):
