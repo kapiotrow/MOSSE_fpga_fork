@@ -44,35 +44,45 @@ def quantize_param(x, bits, range, outfile):
         result_file.write(result)
 
 
-def quantize_fi(x, signed, int_bits, frac_bits, outfile):
+def quantize_fi(x, signed, int_bits, frac_bits, outfile=None):
 
-    x = Fxp(x, signed, int_bits + frac_bits, frac_bits)
-    test = x.get_val()
-    content = 'memory_initialization_radix=2;\n'
-    content += 'memory_initialization_vector=\n'
-    sys.exit()
+    # print(str(x.dtype), x[-1, 0, 0], 'complex' in str(x.dtype))
+    width = int_bits + frac_bits
+    x = Fxp(x, signed, width, frac_bits)
+    
+    if outfile:
+        content = 'memory_initialization_radix=2;\n'
+        content += 'memory_initialization_vector=\n'
 
-    for row in x:
-        for el in row:
-            content += el.bin() + '\n'
-    content += ';'
+        for row in x:
+            for el in row:
+                if 'complex' in str(x.dtype):
+                    bin_repr = el.bin()[:-1]
+                    bin_repr = bin_repr.replace('+', '')
+                    bin_repr = bin_repr.replace('-', '')
+                    bin_real = bin_repr[0:width]
+                    bin_imag = bin_repr[width:]
+                    content += bin_imag + bin_real + '\n'
+                else:
+                    content += el.bin() + '\n'
+        content += ';'
 
-    with open(outfile, 'w') as result_file:
-        result_file.write(content)
+        with open(outfile, 'w') as result_file:
+            result_file.write(content)
+        sys.exit()
     
 
-
 class DeepMosse:
-    def __init__(self, init_frame, init_position, args, FFT_SIZE=224, buffer_features=True):
+    def __init__(self, init_frame, init_position, args, FFT_SIZE=128, buffer_features=True, channels=2):
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         if args.deep:
             self.backbone_device = torch.device('cuda:0')
-            self.channels = 64
+            self.channels = channels
             if args.quantized:
                 print('ITS SO DEEP QUANTIZED')
                 self.use_quant_features = True
                 self.quant_scaling = np.load('/home/magister/CF_tracking/MOSSE_fpga/Mul_0_param0.npy')
-                self.backbone = get_finnlayer('/home/magister/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', self.channels, strict=False)
+                self.backbone = get_finnlayer('/home/magister/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
             else:
                 self.backbone = get_VGG_backbone()
             self.backbone.to(self.backbone_device)
@@ -85,7 +95,7 @@ class DeepMosse:
 
         #buffer features during prediction for update
         self.buffer_features_for_update = buffer_features
-        self.buffered_padding = 64  #in features dimensions
+        self.buffered_padding = 32  #in features dimensions
         self.buffered_features_shape = (args.num_scales,
                                         self.channels,
                                         FFT_SIZE//self.stride + 2*self.buffered_padding,
@@ -116,6 +126,7 @@ class DeepMosse:
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
         self.initialize(init_frame, init_position)
+        self.current_frame = 1
 
 
     #bbox: [xmin, ymin, w, h]
@@ -172,14 +183,16 @@ class DeepMosse:
             self.buffered_windows[scale_idx] = window
             if self.args.debug:
                 cv2.imshow('{} wider search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
+                # if debug == 'predict' and self.current_frame == 2:
+                #     cv2.imwrite('test_inputs/test_input_{}x{}_fpad{}_frame{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE, self.buffered_padding, self.current_frame), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
+                #     cv2.waitKey(0)
+                #     sys.exit()
         else:
             window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
             window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
             if self.args.debug:
                 cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
             # np.save('test_input_256x256.npy', window)
-            # cv2.imwrite('test_input_{}x{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
-            # sys.exit()
 
         window = self.extract_features(window)
  
@@ -201,6 +214,7 @@ class DeepMosse:
             window = self.cnn_preprocess(window)
             window = self.backbone(window)[0].detach()
             window = window.cpu().numpy()
+            window = window[:self.channels, :, :]
             if self.args.quantized and self.use_quant_features:
                 window = quant(window, self.quant_scaling)
                 # print('out:', window[0].shape, window[0])
@@ -222,6 +236,12 @@ class DeepMosse:
         g = self._get_gauss_response(self.FFT_SIZE//self.stride)
         # cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
+        # G_real = np.real(G)
+        # G_imag = np.imag(G)
+        # quantize_fi(G_real, True, 9, 23, 'deployment/memory_inits/gauss32_64x64.coe')
+        # sys.exit()
+        # print('range:', )
+        # print('unique:', np.unique(G_imag))
         if self.use_fixed_point:
             G = Fxp(G, *self.fxp_precision)
             G = np.array(G)
@@ -238,7 +258,14 @@ class DeepMosse:
             self.Hi = Fxp(self.Ai / self.Bi, *self.fxp_precision)
         else:
             self.Hi = self.Ai / self.Bi
+            Hi_real = np.real(self.Hi)*4096
+            Hi_imag = np.imag(self.Hi)*4096
+            # print(self.Hi)
             # print(self.Ai.shape, self.Bi.shape, self.Hi.shape)
+            # print('maxes:')
+            # print(np.max(np.abs(np.real(self.Hi))), np.max(np.abs(np.imag(self.Hi))))
+            # quantize_fi(self.Hi[0], True, 0, 32, outfile='deployment/memory_inits/coef32_64x64_ch0.coe')
+            # sys.exit()
             # print('ai:', self.Ai[:, 0, 0])
             # print('bi:', self.Bi[0, 0])
             # print('hi:', self.Hi[:, 0, 0])
@@ -263,10 +290,22 @@ class DeepMosse:
             # Gi.info()
             gi = np.real(np.fft.ifft2(Gi))
         else:
-            Gi = np.conjugate(self.Hi) * np.fft.fft2(fi)
+            hi_real = np.real(self.Hi)*4096
+            hi_imag = np.imag(self.Hi)*4096
+            fftfi = np.fft.fft2(fi)
+            fftfi_real = np.real(fftfi)/4096
+            fftfi_imag = np.imag(fftfi)/4096
+
+            Gi = self.Hi * np.fft.fft2(fi)
+            gi_real = np.real(Gi)
+            gi_imag = np.imag(Gi)
             Gi = np.sum(Gi, axis=0)
+
+            Gi_real = np.real(Gi)
+            Gi_imag = np.imag(Gi)
             # print('dżi:', Gi.shape)
             gi = np.real(np.fft.ifft2(Gi))
+            gi_real = gi/4096
 
         if self.args.debug:
             cv2.imshow('response', gi)   
@@ -287,6 +326,7 @@ class DeepMosse:
                 if self.buffer_features_for_update:
                     self.best_scale_idx = scale_idx
                     self.best_features_displacement = features_displacement
+                    print('f disp:', features_displacement)
 
         self.position = best_position
         # print('position:', self.position)
@@ -331,12 +371,14 @@ class DeepMosse:
             self.Hi = Fxp(self.Ai.get_val() / self.Bi.get_val(), *self.fxp_precision)
         else:
             fftfi = np.fft.fft2(fi)
-            xd = fftfi * np.conjugate(fftfi)
+            # xd = fftfi * np.conjugate(fftfi)
             # print('fftfi:', xd[0, :10, :10])
-            self.Ai = self.args.lr * (np.conjugate(self.G) * fftfi) + (1 - self.args.lr) * self.Ai
+            dBSUM_lr_channels_tdata = np.real(self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0))) / (4096*4096)
+            self.Ai = self.args.lr * (self.G * np.conjugate(fftfi)) + (1 - self.args.lr) * self.Ai
             self.Bi = self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0)) + (1 - self.args.lr) * self.Bi
+            ASUM_treal = np.real(self.Ai)/4096
+            BSUM_treal = np.real(self.Bi)/(4096*4096)
             self.Hi = self.Ai / self.Bi
-
 
 
     def update_position(self, spatial_response, scale=1):
@@ -375,7 +417,7 @@ class DeepMosse:
 
 
     def track(self, image):
-        
+      
         if not self.target_lost:
             # response = self.predict(image, self.position)
             self.predict_multiscale(image)
@@ -384,6 +426,7 @@ class DeepMosse:
 
             if not self.target_lost:
                 self.update(image)
+            self.current_frame += 1
 
         return [int(el) for el in self.position]
         
@@ -402,27 +445,34 @@ class DeepMosse:
             Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
         else:
             fftfi = np.fft.fft2(fi)
-            Ai = np.conjugate(G) * fftfi
+            fftfi_real = np.real(fftfi)/4096
+            fftfi_imag = np.imag(fftfi)/4096
+            Ai = G * np.conjugate(fftfi)
+            Ai_real = np.real(Ai)/4096
+            Ai_imag = np.imag(Ai)/4096
             Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd
+            Bi_real = np.real(Bi)/(4096*4096)
+            Bi_imag = np.imag(Bi)/(4096*4096)
             Bi = Bi.sum(axis=0)
+            Bisum_real = np.real(Bi)/(4096*4096)
             # print('bi:', Bi.shape)
             # print('ai:', Ai.shape)
 
-        for _ in range(self.args.num_pretrain):
-            if self.args.rotate:
-                fi = self.pre_process(random_warp(template, str(_)))
-            else:
-                fi = self.pre_process(template)
+        # for _ in range(self.args.num_pretrain):
+        #     if self.args.rotate:
+        #         fi = self.pre_process(random_warp(template, str(_)))
+        #     else:
+        #         fi = self.pre_process(template)
 
-            if self.use_fixed_point:
-                fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
-                Ai = Fxp(Ai + G * np.conjugate(fftfi), *self.fxp_precision).get_val()
-                Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
-            else:
-                fftfi = np.fft.fft2(fi)
-                Ai = Ai + np.conjugate(G) * fftfi
-                Bi = Bi + np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd, axis=0) + self.args.lambd
-                # Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
+        #     if self.use_fixed_point:
+        #         fftfi = Fxp(np.fft.fft2(fi), *self.fxp_precision).get_val()
+        #         Ai = Fxp(Ai + G * np.conjugate(fftfi), *self.fxp_precision).get_val()
+        #         Bi = Fxp(Bi + fftfi * np.conjugate(fftfi), *self.fxp_precision).get_val()
+        #     else:
+        #         fftfi = np.fft.fft2(fi)
+        #         Ai = Ai + np.conjugate(G) * fftfi
+        #         Bi = Bi + np.sum(np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd, axis=0) + self.args.lambd
+        #         # Bi = Bi + np.sum(np.fft.fft2(fi), axis=0) * np.sum(np.conjugate(np.fft.fft2(fi)), axis=0)
                 
 
         return Ai, Bi
@@ -441,7 +491,7 @@ class DeepMosse:
 
         window = window_func_2d(height, width)
         # quantize_param(window, bits=32, range=1, outfile="my_hann32_{}x{}.coe".format(height, width))
-        # quantize_fi(window, False, 0, 16, "my_hann16_{}x{}.coe".format(height, width))
+        # quantize_fi(window, False, 0, 32, "my_hann32_{}x{}.coe".format(height, width))
         # sys.exit()
         # print('window:', window.shape)
         if self.use_fixed_point:
@@ -451,7 +501,6 @@ class DeepMosse:
             img = img * window
 
         # img, _ = pad_img(img, padded_size, pad_type=self.pad_type)
-
         return img
 
 
@@ -524,151 +573,3 @@ class DeepMosse:
 
         return width > 0 and height > 0
 
-# class mosse_old:
-#     def __init__(self, args, sequence_path):
-#         # get arguments..
-#         self.args = args
-#         self.sequence_path = sequence_path
-#         self.img_path = join(sequence_path, 'img')
-#         # get the img lists...
-#         self.frame_lists = self._get_img_lists(self.img_path)
-#         self.frame_lists.sort()
-#         self.target_lost = False
-    
-#     # start to do the object tracking...
-#     def start_tracking(self):
-#         results = []
-#         # get the image of the first frame... (read as gray scale image...)
-#         gt_boxes = load_gt(join(self.sequence_path, 'groundtruth.txt'))
-#         init_img = cv2.imread(self.frame_lists[0])
-#         init_frame = cv2.cvtColor(init_img, cv2.COLOR_BGR2GRAY)
-#         init_frame = init_frame.astype(np.float32)
-#         # get the init ground truth.. [x, y, width, height]
-#         # init_gt = cv2.selectROI('demo', init_img, False, False)
-#         init_gt = gt_boxes[0]
-#         init_gt = np.array(init_gt).astype(np.int64)
-#         # start to draw the gaussian response...
-#         response_map = self._get_gauss_response(init_frame, init_gt)
-#         # start to create the training set ...
-#         # get the goal..
-#         g = response_map[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-#         fi = init_frame[init_gt[1]:init_gt[1]+init_gt[3], init_gt[0]:init_gt[0]+init_gt[2]]
-#         G = np.fft.fft2(g)
-#         # start to do the pre-training...
-#         Ai, Bi = self._pre_training(fi, G)
-#         # start the tracking...
-#         for idx in range(len(self.frame_lists)):
-#             current_frame = cv2.imread(self.frame_lists[idx])
-#             frame_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-#             frame_gray = frame_gray.astype(np.float32)
-#             if idx == 0:
-#                 Ai = self.args.lr * Ai
-#                 Bi = self.args.lr * Bi
-#                 pos = init_gt.copy()
-#                 clip_pos = np.array([pos[0], pos[1], pos[0]+pos[2], pos[1]+pos[3]]).astype(np.int64)
-#             elif self.target_lost:
-#                 pos = [0, 0, 0, 0]
-#             else:
-#                 Hi = Ai / Bi
-#                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-#                 fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])))
-#                 Gi = Hi * np.fft.fft2(fi)
-#                 gi = linear_mapping(np.fft.ifft2(Gi))
-#                 # find the max pos...
-#                 max_value = np.max(gi)
-#                 max_pos = np.where(gi == max_value)
-#                 dy = int(np.mean(max_pos[0]) - gi.shape[0] / 2)
-#                 dx = int(np.mean(max_pos[1]) - gi.shape[1] / 2)
-                
-#                 # update the position...
-#                 pos[0] = pos[0] + dx
-#                 pos[1] = pos[1] + dy
-
-#                 # trying to get the clipped position [xmin, ymin, xmax, ymax]
-#                 clip_pos[0] = np.clip(pos[0], 0, current_frame.shape[1])
-#                 clip_pos[1] = np.clip(pos[1], 0, current_frame.shape[0])
-#                 clip_pos[2] = np.clip(pos[0]+pos[2], 0, current_frame.shape[1])
-#                 clip_pos[3] = np.clip(pos[1]+pos[3], 0, current_frame.shape[0])
-#                 clip_pos = clip_pos.astype(np.int64)
-
-#                 # get the current fi..
-#                 fi = frame_gray[clip_pos[1]:clip_pos[3], clip_pos[0]:clip_pos[2]]
-#                 # print('fi shape:', fi.shape)
-#                 if min(fi.shape) == 0:
-#                     self.target_lost = True
-#                     print('TARGET LOST')
-#                 else:
-#                     fi = pre_process(cv2.resize(fi, (init_gt[2], init_gt[3])))
-#                     # online update...
-#                     Ai = self.args.lr * (G * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Ai
-#                     Bi = self.args.lr * (np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))) + (1 - self.args.lr) * Bi
-            
-#             results.append(pos.copy())
-#             # visualize the tracking process...
-#             # cv2.rectangle(current_frame, (pos[0], pos[1]), (pos[0]+pos[2], pos[1]+pos[3]), (255, 0, 0), 2)
-#             # cv2.imshow('demo', current_frame)
-#             # if cv2.waitKey(0) == ord('q'):
-#             #     break
-#             # if record... save the frames..
-#             if self.args.record:
-#                 frame_path = 'record_frames/' + self.img_path.split('/')[1] + '/'
-#                 if not os.path.exists(frame_path):
-#                     os.mkdir(frame_path)
-#                 cv2.imwrite(frame_path + str(idx).zfill(5) + '.png', current_frame)
-
-#         return results
-
-
-#     # pre train the filter on the first frame...
-#     def _pre_training(self, init_frame, G):
-#         height, width = G.shape
-#         fi = cv2.resize(init_frame, (width, height))
-#         # pre-process img..
-#         fi = pre_process(fi)
-#         Ai = G * np.conjugate(np.fft.fft2(fi))
-#         Bi = np.fft.fft2(init_frame) * np.conjugate(np.fft.fft2(init_frame))
-#         for _ in range(self.args.num_pretrain):
-#             if self.args.rotate:
-#                 warp = random_warp(init_frame)
-#                 fi = pre_process(warp)
-#             else:
-#                 fi = pre_process(init_frame)
-#             Ai = Ai + G * np.conjugate(np.fft.fft2(fi))
-#             Bi = Bi + np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi))
-        
-#         return Ai, Bi
-
-#     # get the ground-truth gaussian reponse...
-#     def _get_gauss_response(self, img, gt):
-#         # get the shape of the image..
-#         height, width = img.shape
-#         # get the mesh grid...
-#         xx, yy = np.meshgrid(np.arange(width), np.arange(height))
-#         # get the center of the object...
-#         center_x = gt[0] + 0.5 * gt[2]
-#         center_y = gt[1] + 0.5 * gt[3]
-#         # cal the distance...
-#         dist = (np.square(xx - center_x) + np.square(yy - center_y)) / (2 * self.args.sigma)
-#         # get the response map...
-#         response = np.exp(-dist)
-#         # normalize...
-#         response = linear_mapping(response)
-#         return response
-
-#     # it will extract the image list 
-#     def _get_img_lists(self, img_path):
-#         frame_list = []
-#         for frame in os.listdir(img_path):
-#             if os.path.splitext(frame)[1] == '.jpg':
-#                 frame_list.append(os.path.join(img_path, frame)) 
-#         return frame_list
-    
-#     # it will get the first ground truth of the video..
-#     def _get_init_ground_truth(self, img_path):
-#         gt_path = os.path.join(img_path, 'groundtruth.txt')
-#         with open(gt_path, 'r') as f:
-#             # just read the first frame...
-#             line = f.readline()
-#             gt_pos = line.split(',')
-
-#         return [float(element) for element in gt_pos]
