@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import time
 import matplotlib.pyplot as plt
+import json
 
 from utils import bbox_iou, load_gt, init_seeds
 from mosse import mosse
@@ -85,7 +86,7 @@ def test_sequence(sequence):
     print('init frame:', join(imgdir, imgnames[0]))
     init_img = cv2.imread(join(imgdir, imgnames[0]))
     gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'), standard='vot2015')
-    tracker = DeepMosse(init_img, gt_boxes[0], args)
+    tracker = DeepMosse(init_img, gt_boxes[0], config=config, debug=args.debug)
 
     if args.debug:
         position = gt_boxes[0]
@@ -117,26 +118,29 @@ def test_sequence(sequence):
 
 
 parse = argparse.ArgumentParser()
-parse.add_argument('--lr', type=float, default=0.025, help='the learning rate')
-parse.add_argument('--sigma', type=float, default=17, help='the sigma')
-parse.add_argument('--lambd', type=float, default=0.01, help='regularization parameter')
-parse.add_argument('--num_pretrain', type=int, default=0, help='the number of pretrain')
-parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
+parse.add_argument('--config', type=str, default='configs/config.json')
 parse.add_argument('--seq', type=str, default='all')
 parse.add_argument('--params_search', action='store_true', default=False)
 parse.add_argument('--debug', action='store_true', default=False)
-parse.add_argument('--deep', action='store_true', default=False, help='whether to use deep features instead of grayscale')
-parse.add_argument('--search_region_scale', type=float, default=2)
-parse.add_argument('--clip_search_region', action='store_true', help='whether to clip search region to image borders or make a border (zero-pad or reflect)')
-parse.add_argument('--scale_factor', type=float, default=1.005)
-parse.add_argument('--num_scales', type=int, default=5)
-parse.add_argument('--border_type', type=str, default='reflect', help='reflect or constant')
-parse.add_argument('--quantized', action='store_true')
 args = parse.parse_args()
-print('args:', args)
+
+# parse.add_argument('--lr', type=float, default=0.025, help='the learning rate')
+# parse.add_argument('--sigma', type=float, default=17, help='the sigma')
+# parse.add_argument('--lambd', type=float, default=0.01, help='regularization parameter')
+# parse.add_argument('--num_pretrain', type=int, default=0, help='the number of pretrain')
+# # parse.add_argument('--rotate', action='store_true', help='if rotate image during pre-training.')
+# parse.add_argument('--deep', action='store_true', default=False, help='whether to use deep features instead of grayscale')
+# parse.add_argument('--search_region_scale', type=float, default=2)
+# parse.add_argument('--clip_search_region', action='store_true', help='whether to clip search region to image borders or make a border (zero-pad or reflect)')
+# parse.add_argument('--scale_factor', type=float, default=1.005)
+# parse.add_argument('--num_scales', type=int, default=5)
+# parse.add_argument('--border_type', type=str, default='reflect', help='reflect or constant')
+# parse.add_argument('--quantized', action='store_true')
+with open(args.config, 'r') as json_file:
+    config = json.load(json_file)
 
 # DATASET_DIR = '../datasets/VOT2013'
-DATASET_DIR = 'vot_workspace/sequences'
+DATASET_DIR = 'workspace_vot2015/sequences'
 # CONV_NETWORK_NAME = 'yolo_finn_6conv_8w8a_160x320_5anchors'
 # NET_CONFIG = join('networks', CONV_NETWORK_NAME, 'config.json')
 # NET_WEIGHTS = join('networks', CONV_NETWORK_NAME, 'test_best.pt')
@@ -181,7 +185,6 @@ if args.params_search:
     print('Finished. Best score:', best_score, 'best params:', best_params)
 
 else:
-    print('sigma: {:.3f}\tlr: {:.3f}'.format(args.sigma, args.lr))
     ious_per_sequence = {}
     for sequence in sequences:
         # print('Testing', sequence)

@@ -5,6 +5,7 @@ import time
 import sys
 import torch
 import torchvision.transforms as transforms
+from easydict import EasyDict
 
 from fxpmath import Fxp
 import cv2
@@ -12,15 +13,7 @@ import cv2
 from utils import get_VGG_backbone, linear_mapping, random_warp, pad_img, load_gt, window_func_2d, pre_process, get_CF_backbone
 from imagenet.finn_models import get_finnlayer
 
-# FFT_SIZE = 200
 
-
-"""
-This module implements the basic correlation filter based tracking algorithm -- MOSSE
-
-Date: 2018-05-28
-
-"""
 
 def quant(x, mul):
     q = np.round(x / mul)
@@ -73,44 +66,42 @@ def quantize_fi(x, signed, int_bits, frac_bits, outfile=None):
     
 
 class DeepMosse:
-    def __init__(self, init_frame, init_position, args, FFT_SIZE=128, buffer_features=True, channels=2):
+    def __init__(self, init_frame, init_position, config, debug=False):
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
+        args = EasyDict(config)
+        args.debug = debug
+        print('config:', args)
         if args.deep:
             self.backbone_device = torch.device('cuda:0')
-            self.channels = channels
             if args.quantized:
                 print('ITS SO DEEP QUANTIZED')
                 self.use_quant_features = True
-                self.quant_scaling = np.load('/home/magister/CF_tracking/MOSSE_fpga/Mul_0_param0.npy')
-                self.backbone = get_finnlayer('/home/magister/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
+                self.quant_scaling = np.load('/home/vision/danilowi/CF_tracking/MOSSE_fpga/deployment/Mul_0_param0.npy')
+                self.backbone = get_finnlayer('/home/vision/danilowi/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
             else:
                 self.backbone = get_VGG_backbone()
             self.backbone.to(self.backbone_device)
             self.stride = 2
         else:
             # print('your regular boy')
-            self.channels = 1
             self.stride = 1
-        self.features_width = FFT_SIZE//self.stride            
+        self.features_width = args.ROI_SIZE//self.stride            
 
         #buffer features during prediction for update
-        self.buffer_features_for_update = buffer_features
-        self.buffered_padding = 32  #in features dimensions
+        self.buffer_features_for_update = args.buffer_features
         self.buffered_features_shape = (args.num_scales,
-                                        self.channels,
-                                        FFT_SIZE//self.stride + 2*self.buffered_padding,
-                                        FFT_SIZE//self.stride + 2*self.buffered_padding)
+                                        args.channels,
+                                        args.ROI_SIZE//self.stride + 2*args.buffered_padding,
+                                        args.ROI_SIZE//self.stride + 2*args.buffered_padding)
         self.buffered_features = np.zeros(self.buffered_features_shape, dtype=np.float32)
         self.buffered_windows = np.zeros((args.num_scales,
-                                          2*self.buffered_padding*self.stride + FFT_SIZE,
-                                          2*self.buffered_padding*self.stride + FFT_SIZE,
+                                          2*args.buffered_padding*self.stride + args.ROI_SIZE,
+                                          2*args.buffered_padding*self.stride + args.ROI_SIZE,
                                           3), dtype=np.uint8)
-        print('buffer features: {}, padding {}'.format(buffer_features, self.buffered_padding))
+        # print('buffer features: {}, padding {}'.format(args.buffer_features, args.buffered_padding))
         # print("buffered windows dtype:", self.buffered_windows.dtype)
         # print("buffered features dtype:", self.buffered_features.dtype)
 
-        self.args = args
-        self.FFT_SIZE = FFT_SIZE
         scale_exponents = [i - np.floor(args.num_scales / 2) for i in range(args.num_scales)]
         self.scale_multipliers = [pow(args.scale_factor, ex) for ex in scale_exponents]
         self.target_lost = False
@@ -125,6 +116,7 @@ class DeepMosse:
         self.fractional_precision = 8
         self.fxp_precision = [True, 31+self.fractional_precision, self.fractional_precision]
 
+        self.args = args
         self.initialize(init_frame, init_position)
         self.current_frame = 1
 
@@ -158,15 +150,15 @@ class DeepMosse:
         ymax = np.clip(ymax, 0, frame.shape[0])
 
         # scaling from image dimensions to features dimensions - for calculating displacement later
-        self.x_scale = (self.FFT_SIZE/self.stride) / (xmax - xmin)
-        self.y_scale = (self.FFT_SIZE/self.stride) / (ymax - ymin)
+        self.x_scale = (self.args.ROI_SIZE/self.stride) / (xmax - xmin)
+        self.y_scale = (self.args.ROI_SIZE/self.stride) / (ymax - ymin)
 
         if self.buffer_features_for_update and not ignore_buffering:
-            # computing additional context in image dimensions to achieve <self.buffered_padding> in features dimensions
+            # computing additional context in image dimensions to achieve <self.args.buffered_padding> in features dimensions
             # and maintain self.x_scale, self.y_scale
-            window_widen = 2*self.buffered_padding*self.stride
-            dw = (self.FFT_SIZE + window_widen) / (self.x_scale*self.stride) - (xmax - xmin)
-            dh = (self.FFT_SIZE + window_widen) / (self.y_scale*self.stride) - (ymax - ymin)
+            window_widen = 2 * self.args.buffered_padding * self.stride
+            dw = (self.args.ROI_SIZE + window_widen) / (self.x_scale*self.stride) - (xmax - xmin)
+            dh = (self.args.ROI_SIZE + window_widen) / (self.y_scale*self.stride) - (ymax - ymin)
             dw /= 2
             dh /= 2
             xmin = np.clip(xmin-dw, 0, frame.shape[1])
@@ -176,20 +168,20 @@ class DeepMosse:
             window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
             # print('window shape:', window.shape)
             # print('window position:', ymin-dh, ymax+dh)
-            window = cv2.resize(window, (self.FFT_SIZE + window_widen, self.FFT_SIZE + window_widen))
-            # cropped_window = window[self.stride*self.buffered_padding : -self.stride*self.buffered_padding,
-            #                         self.stride*self.buffered_padding : -self.stride*self.buffered_padding,
+            window = cv2.resize(window, (self.args.ROI_SIZE + window_widen, self.args.ROI_SIZE + window_widen))
+            # cropped_window = window[self.stride*self.args.buffered_padding : -self.stride*self.args.buffered_padding,
+            #                         self.stride*self.args.buffered_padding : -self.stride*self.args.buffered_padding,
             #                         :]
             self.buffered_windows[scale_idx] = window
             if self.args.debug:
                 cv2.imshow('{} wider search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
-                # if debug == 'predict' and self.current_frame == 2:
-                #     cv2.imwrite('test_inputs/test_input_{}x{}_fpad{}_frame{}_BGR.ppm'.format(self.FFT_SIZE, self.FFT_SIZE, self.buffered_padding, self.current_frame), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
-                #     cv2.waitKey(0)
-                #     sys.exit()
+                # if debug == 'predict' and self.current_frame <= 10:
+                    # cv2.imwrite('../test_inputs/test_input_{}x{}_fpad{}_BGR_frame{:2d}.ppm'.format(self.ROI_SIZE, self.ROI_SIZE, self.args.buffered_padding, self.current_frame), cv2.cvtColor(window, cv2.COLOR_RGB2BGR))
+                    # cv2.waitKey(0)
+                    # sys.exit()
         else:
             window = frame[int(round(ymin)) : int(round(ymax)), int(round(xmin)) : int(round(xmax)), :]
-            window = cv2.resize(window, (self.FFT_SIZE, self.FFT_SIZE))
+            window = cv2.resize(window, (self.args.ROI_SIZE, self.args.ROI_SIZE))
             if self.args.debug:
                 cv2.imshow('{} search window {:.3f}'.format(debug, scale), window.astype(np.uint8))
             # np.save('test_input_256x256.npy', window)
@@ -199,8 +191,8 @@ class DeepMosse:
         if self.buffer_features_for_update and not ignore_buffering:
             self.buffered_features[scale_idx] = window
             window = window[:,
-                            self.buffered_padding : -self.buffered_padding,
-                            self.buffered_padding : -self.buffered_padding]
+                            self.args.buffered_padding : -self.args.buffered_padding,
+                            self.args.buffered_padding : -self.args.buffered_padding]
 
         return window
 
@@ -214,7 +206,7 @@ class DeepMosse:
             window = self.cnn_preprocess(window)
             window = self.backbone(window)[0].detach()
             window = window.cpu().numpy()
-            window = window[:self.channels, :, :]
+            window = window[:self.args.channels, :, :]
             if self.args.quantized and self.use_quant_features:
                 window = quant(window, self.quant_scaling)
                 # print('out:', window[0].shape, window[0])
@@ -233,7 +225,7 @@ class DeepMosse:
         init_gt = init_position
         init_gt = np.array(init_gt).astype(np.int64)
 
-        g = self._get_gauss_response(self.FFT_SIZE//self.stride)
+        g = self._get_gauss_response(self.args.ROI_SIZE//self.stride)
         # cv2.imshow('goal', (g*255).astype(np.uint8))
         G = np.fft.fft2(g)
         # G_real = np.real(G)
@@ -273,6 +265,7 @@ class DeepMosse:
         # position in [x1, y1, w, h]
         # clip_pos in [x1, y1, x2, y2]
         self.position = init_gt.copy()
+        # print('frame 0:', (0, 0))
         # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
 
@@ -326,7 +319,7 @@ class DeepMosse:
                 if self.buffer_features_for_update:
                     self.best_scale_idx = scale_idx
                     self.best_features_displacement = features_displacement
-                    print('f disp:', features_displacement)
+                    print('frame {}:'.format(self.current_frame), features_displacement)
 
         self.position = best_position
         # print('position:', self.position)
@@ -336,21 +329,21 @@ class DeepMosse:
 
         if self.buffer_features_for_update:
             # window = self.buffered_windows[self.best_scale_idx]
-            # x_win = self.buffered_padding*self.stride + self.best_features_displacement[0]*self.stride
-            # y_win = self.buffered_padding*self.stride + self.best_features_displacement[1]*self.stride
-            # cropped_window = window[y_win : y_win+self.FFT_SIZE, 
-            #                         x_win : x_win+self.FFT_SIZE,
+            # x_win = self.args.buffered_padding*self.stride + self.best_features_displacement[0]*self.stride
+            # y_win = self.args.buffered_padding*self.stride + self.best_features_displacement[1]*self.stride
+            # cropped_window = window[y_win : y_win+self.args.ROI_SIZE, 
+            #                         x_win : x_win+self.args.ROI_SIZE,
             #                         :]
             # cv2.imshow('cropped search window', cropped_window.astype(np.uint8))
             # fi = self.extract_features(cropped_window)
             fi = self.buffered_features[self.best_scale_idx]
-            x_position_in_window = self.buffered_padding + self.best_features_displacement[0]
-            y_position_in_window = self.buffered_padding + self.best_features_displacement[1]
+            x_position_in_window = self.args.buffered_padding + self.best_features_displacement[0]
+            y_position_in_window = self.args.buffered_padding + self.best_features_displacement[1]
 
-            if np.abs(self.best_features_displacement[0]) > self.buffered_padding or np.abs(self.best_features_displacement[1]) > self.buffered_padding:
+            if np.abs(self.best_features_displacement[0]) > self.args.buffered_padding or np.abs(self.best_features_displacement[1]) > self.args.buffered_padding:
                 print('DISPLACEMENT {}, {} BIGGER THAN FEATURES PADDING, CLIPPING...'.format(*self.best_features_displacement))
-                x_position_in_window = np.clip(x_position_in_window, 0, 2*self.buffered_padding)
-                y_position_in_window = np.clip(y_position_in_window, 0, 2*self.buffered_padding)
+                x_position_in_window = np.clip(x_position_in_window, 0, 2*self.args.buffered_padding)
+                y_position_in_window = np.clip(y_position_in_window, 0, 2*self.args.buffered_padding)
             
             fi = fi[:,
                     y_position_in_window : y_position_in_window+self.features_width,
@@ -373,11 +366,11 @@ class DeepMosse:
             fftfi = np.fft.fft2(fi)
             # xd = fftfi * np.conjugate(fftfi)
             # print('fftfi:', xd[0, :10, :10])
-            dBSUM_lr_channels_tdata = np.real(self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0))) / (4096*4096)
+            # dBSUM_lr_channels_tdata = np.real(self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0))) / (4096*4096)
             self.Ai = self.args.lr * (self.G * np.conjugate(fftfi)) + (1 - self.args.lr) * self.Ai
             self.Bi = self.args.lr * (np.sum(fftfi * np.conjugate(fftfi) + self.args.lambd, axis=0)) + (1 - self.args.lr) * self.Bi
-            ASUM_treal = np.real(self.Ai)/4096
-            BSUM_treal = np.real(self.Bi)/(4096*4096)
+            # ASUM_treal = np.real(self.Ai)/4096
+            # BSUM_treal = np.real(self.Bi)/(4096*4096)
             self.Hi = self.Ai / self.Bi
 
 
@@ -445,16 +438,16 @@ class DeepMosse:
             Bi = Fxp(fftfi * np.conjugate(fftfi)).get_val()
         else:
             fftfi = np.fft.fft2(fi)
-            fftfi_real = np.real(fftfi)/4096
-            fftfi_imag = np.imag(fftfi)/4096
+            # fftfi_real = np.real(fftfi)/4096
+            # fftfi_imag = np.imag(fftfi)/4096
             Ai = G * np.conjugate(fftfi)
-            Ai_real = np.real(Ai)/4096
-            Ai_imag = np.imag(Ai)/4096
+            # Ai_real = np.real(Ai)/4096
+            # Ai_imag = np.imag(Ai)/4096
             Bi = np.fft.fft2(fi) * np.conjugate(np.fft.fft2(fi)) + self.args.lambd
-            Bi_real = np.real(Bi)/(4096*4096)
-            Bi_imag = np.imag(Bi)/(4096*4096)
+            # Bi_real = np.real(Bi)/(4096*4096)
+            # Bi_imag = np.imag(Bi)/(4096*4096)
             Bi = Bi.sum(axis=0)
-            Bisum_real = np.real(Bi)/(4096*4096)
+            # Bisum_real = np.real(Bi)/(4096*4096)
             # print('bi:', Bi.shape)
             # print('ai:', Ai.shape)
 

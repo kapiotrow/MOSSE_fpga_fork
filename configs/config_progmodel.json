@@ -1,0 +1,16 @@
+{
+    "deep": true,
+    "quantized": true,
+    "ROI_SIZE": 128,
+    "buffer_features": true,
+    "buffered_padding": 32,
+    "channels": 2,
+    "lr": 0.125,
+    "sigma": 17,
+    "lambd": 0.0,
+    "search_region_scale": 2,
+    "clip_search_region": false,
+    "border_type": "reflect",
+    "num_scales": 1,
+    "scale_factor": 1.005
+}
