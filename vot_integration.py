@@ -9,7 +9,7 @@ import json
 
 from deep_mosse import DeepMosse
 
-CONFIG = '/configs/config.json'
+CONFIG = '/home/vision/danilowi/CF_tracking/MOSSE_fpga/configs/config.json'
 with open(CONFIG, 'r') as json_file:
     config = json.load(json_file)
 

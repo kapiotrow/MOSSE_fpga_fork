@@ -216,18 +216,20 @@ def load_finnlayer(model, checkpoint_path):
     model.load_state_dict(model_dict)
 
 
-def get_finnlayer(weights_path, channels=64, strict=True):
+# assuming weights are for 64 channels
+def get_finnlayer(weights_path, w_a_bitwidths=(4, 4), channels=64, load_weights=True, strict=True):
 
-    model = FINNLayer(4, 4, channels, include_pooling=True)
-    weights_dict = torch.load(weights_path)['state_dict']
+    model = FINNLayer(w_a_bitwidths[0], w_a_bitwidths[1], channels, include_pooling=True)
+    weights_dict = torch.load(weights_path, map_location='cpu')['state_dict']
 
     new_dict = {}
     for k, v in weights_dict.items():
         if 'module.' in k:
             k = k.strip('module.')
-            new_dict[k] = v
+            new_dict[k] = v[:channels]
 
-    model.load_state_dict(new_dict, strict=strict)
+    if load_weights:
+        model.load_state_dict(new_dict, strict=strict)
     model.eval()
 
     return model

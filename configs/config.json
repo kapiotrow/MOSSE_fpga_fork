@@ -1,16 +1,16 @@
 {
     "deep": true,
     "quantized": true,
-    "ROI_SIZE": 224,
+    "ROI_SIZE": 128,
     "buffer_features": false,
     "buffered_padding": 0,
-    "channels": 32,
+    "channels": 8,
     "lr": 0.025,
-    "sigma": 17,
+    "sigma": 10,
     "lambd": 0.01,
-    "search_region_scale": 2,
+    "search_region_scale": 2.5,
     "clip_search_region": false,
     "border_type": "reflect",
-    "num_scales": 5,
-    "scale_factor": 1.005
+    "num_scales": 3,
+    "scale_factor": 1.01
 }

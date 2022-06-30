@@ -77,7 +77,9 @@ class DeepMosse:
                 print('ITS SO DEEP QUANTIZED')
                 self.use_quant_features = True
                 self.quant_scaling = np.load('/home/vision/danilowi/CF_tracking/MOSSE_fpga/deployment/Mul_0_param0.npy')
-                self.backbone = get_finnlayer('/home/vision/danilowi/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar', strict=False)
+                self.backbone = get_finnlayer('/home/vision/danilowi/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar',
+                                              channels=args.channels,
+                                              strict=False)
             else:
                 self.backbone = get_VGG_backbone()
             self.backbone.to(self.backbone_device)
@@ -283,6 +285,7 @@ class DeepMosse:
             # Gi.info()
             gi = np.real(np.fft.ifft2(Gi))
         else:
+            print('predict filter shape:', self.Hi.shape)
             hi_real = np.real(self.Hi)*4096
             hi_imag = np.imag(self.Hi)*4096
             fftfi = np.fft.fft2(fi)
