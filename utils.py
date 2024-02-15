@@ -65,7 +65,7 @@ def pre_process(img):
     return img
 
 
-def load_gt(gt_file, format='xyxy', standard='vot2013'):
+def load_gt(gt_file, format='xyxy', standard='vot2015'):
 
     with open(gt_file, 'r') as file:
         lines = file.readlines()
@@ -81,6 +81,7 @@ def load_gt(gt_file, format='xyxy', standard='vot2013'):
     if standard == 'vot2013':
         result = lines
     else:
+        test_line = lines[0]
         result = [[line[0], line[1], line[2]-line[0], line[5]-line[1]] for line in lines]
 
     # returns in xywh format

@@ -285,7 +285,6 @@ class DeepMosse:
             # Gi.info()
             gi = np.real(np.fft.ifft2(Gi))
         else:
-            print('predict filter shape:', self.Hi.shape)
             hi_real = np.real(self.Hi)*4096
             hi_imag = np.imag(self.Hi)*4096
             fftfi = np.fft.fft2(fi)
