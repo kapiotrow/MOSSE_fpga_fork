@@ -1,6 +1,7 @@
 {
     "deep": true,
-    "quantized": true,
+    "quantized": false,
+    "quant_weights": "/home/vision/danilowi/test/MOSSE_fpga/savegame_0_15000.pth.tar",
     "ROI_SIZE": 224,
     "buffer_features": false,
     "buffered_padding": 0,

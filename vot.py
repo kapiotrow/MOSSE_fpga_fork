@@ -1,16 +1,15 @@
 """
 \file vot.py
 
-@brief Python utility functions for VOT integration
+@brief Python utility functions for VOT toolkit integration
 
 @author Luka Cehovin, Alessio Dore
 
-@date 2016
+@date 2023
 
 """
 
-import sys
-import copy
+import os
 import collections
 import numpy as np
 
@@ -19,19 +18,30 @@ try:
 except ImportError:
     raise Exception('TraX support not found. Please add trax module to Python path.')
 
+if trax._ctypes.trax_version().decode("ascii") < "4.0.0":
+    raise ImportError('TraX version 4.0.0 or newer is required.')
+
 Rectangle = collections.namedtuple('Rectangle', ['x', 'y', 'width', 'height'])
 Point = collections.namedtuple('Point', ['x', 'y'])
 Polygon = collections.namedtuple('Polygon', ['points'])
+Empty = collections.namedtuple('Empty', [])
 
 class VOT(object):
-    """ Base class for Python VOT integration """
-    def __init__(self, region_format, channels=None):
-        """ Constructor
+    """ Base class for VOT toolkit integration in Python.
+        This class is only a wrapper around the TraX protocol and can be used for single or multi-object tracking.
+        The wrapper assumes that the experiment will provide new objects onlf at the first frame and will fail otherwise."""
+    def __init__(self, region_format, channels=None, multiobject: bool = None):
+        """ Constructor for the VOT wrapper.
 
         Args:
             region_format: Region format options
+            channels: Channels that are supported by the tracker
+            multiobject: Whether to use multi-object tracking
         """
         assert(region_format in [trax.Region.RECTANGLE, trax.Region.POLYGON, trax.Region.MASK])
+
+        if multiobject is None:
+            multiobject = os.environ.get('VOT_MULTI_OBJECT', '0') == '1'
 
         if channels is None:
             channels = ['color']
@@ -44,51 +54,86 @@ class VOT(object):
         else:
             raise Exception('Illegal configuration {}.'.format(channels))
 
-        self._trax = trax.Server([region_format], [trax.Image.PATH], channels, customMetadata=dict(vot="python"))
+        self._trax = trax.Server([region_format], [trax.Image.PATH], channels, metadata=dict(vot="python"), multiobject=multiobject)
 
         request = self._trax.wait()
         assert(request.type == 'initialize')
-        if isinstance(request.region, trax.Polygon):
-            self._region = Polygon([Point(x[0], x[1]) for x in request.region])
-        elif isinstance(request.region, trax.Mask):
-            self._region = request.region.array(True)
-        else:
-            self._region = Rectangle(*request.region.bounds())
+
+        self._objects = []
+
+        assert len(request.objects) > 0 and (multiobject or len(request.objects) == 1)
+
+        for object, _ in request.objects:
+            if isinstance(object, trax.Polygon):
+                self._objects.append(Polygon([Point(x[0], x[1]) for x in object]))
+            elif isinstance(object, trax.Mask):
+                self._objects.append(object.array(True))
+            else:
+                self._objects.append(Rectangle(*object.bounds()))
+
         self._image = [x.path() for k, x in request.image.items()]
         if len(self._image) == 1:
             self._image = self._image[0]
 
-        self._trax.status(request.region)
+        self._multiobject = multiobject
+
+        self._trax.status(request.objects)
 
     def region(self):
         """
-        Send configuration message to the client and receive the initialization
-        region and the path of the first image
+        Returns initialization region for the first frame in single object tracking mode.
 
         Returns:
             initialization region
         """
 
-        return self._region
+        assert not self._multiobject
 
-    def report(self, region, confidence = None):
+        return self._objects[0]
+
+    def objects(self):
+        """
+        Returns initialization regions for the first frame in multi object tracking mode.
+
+        Returns:
+            initialization regions for all objects
+        """
+
+        return self._objects
+
+    def report(self, status, confidence = None):
         """
         Report the tracking results to the client
 
         Arguments:
-            region: region for the frame
+            status: region for the frame or a list of regions in case of multi object tracking
+            confidence: confidence for the object detection, used only in single object tracking mode
         """
-        assert(isinstance(region, (Rectangle, Polygon, np.ndarray)))
-        if isinstance(region, Polygon):
-            tregion = trax.Polygon.create([(x.x, x.y) for x in region.points])
-        elif isinstance(region, np.ndarray):
-            tregion = trax.Mask.create(region)
+
+        def convert(region):
+            """ Convert region to TraX format """
+            # If region is None, return empty region
+            if region is None: return trax.Rectangle.create(0, 0, 0, 0)
+            assert isinstance(region, (Empty, Rectangle, Polygon, np.ndarray))
+            if isinstance(region, Empty):
+                return trax.Rectangle.create(0, 0, 0, 0)
+            elif isinstance(region, Polygon):
+                return trax.Polygon.create([(x.x, x.y) for x in region.points])
+            elif isinstance(region, np.ndarray):
+                return trax.Mask.create(region)
+            else:
+                return trax.Rectangle.create(region.x, region.y, region.width, region.height)
+
+        if not self._multiobject:
+            properties = {}
+            if not confidence is None:
+                properties['confidence'] = confidence
+            status = [(convert(status), properties)]
         else:
-            tregion = trax.Rectangle.create(region.x, region.y, region.width, region.height)
-        properties = {}
-        if not confidence is None:
-            properties['confidence'] = confidence
-        self._trax.status(tregion, properties)
+            assert isinstance(status, (list, tuple))
+            status = [(convert(x), {}) for x in status]
+
+        self._trax.status(status, {})
 
     def frame(self):
         """
@@ -104,6 +149,9 @@ class VOT(object):
 
         request = self._trax.wait()
 
+        # Only the first frame can declare new objects for now
+        assert request.objects is None or len(request.objects) == 0
+
         if request.type == 'frame':
             image = [x.path() for k, x in request.image.items()]
             if len(image) == 1:
@@ -112,11 +160,47 @@ class VOT(object):
         else:
             return None
 
-
     def quit(self):
+        """ Quit the tracker"""
         if hasattr(self, '_trax'):
             self._trax.quit()
 
     def __del__(self):
+        """ Destructor for the tracker, calls quit. """
         self.quit()
 
+class VOTManager(object):
+    """ VOT Manager is provides a simple interface for running multiple single object trackers in parallel. Trackers should implement a factory interface. """
+
+    def __init__(self, factory, region_format, channels=None):
+        """ Constructor for the manager. 
+        The factory should be a callable that accepts two arguments: image and region and returns a callable that accepts a single argument (image) and returns a region.
+
+        Args:
+            factory: Factory function for creating trackers
+            region_format: Region format options
+            channels: Channels that are supported by the tracker
+        """
+        self._handle = VOT(region_format, channels, multiobject=True)
+        self._factory = factory
+
+    def run(self):
+        """ Run the tracker, the tracking loop is implemented in this function, so it will block until the client terminates the connection."""
+        objects = self._handle.objects()
+
+        # Process the first frame
+        image = self._handle.frame()
+        if not image:
+            return
+
+        trackers = [self._factory(image, object) for object in objects]
+
+        while True:
+
+            image = self._handle.frame()
+            if not image:
+                break
+
+            status = [tracker(image) for tracker in trackers]
+
+            self._handle.report(status)

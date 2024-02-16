@@ -4,10 +4,11 @@ import cv2
 import argparse
 import numpy as np
 import time
+import datetime
 import matplotlib.pyplot as plt
 import json
 
-from utils import bbox_iou, load_gt, init_seeds
+from utils import bbox_iou, load_gt, init_seeds, check_bbox
 from mosse import mosse
 from deep_mosse import DeepMosse
 
@@ -85,22 +86,23 @@ def test_sequence(sequence, write_images=False):
     imgnames = os.listdir(imgdir)                  
     imgnames.sort()
 
-    print('init frame:', join(imgdir, imgnames[0]))
+    # print('init frame:', join(imgdir, imgnames[0]))
     init_img = cv2.imread(join(imgdir, imgnames[0]))
-    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'), standard='vot2015')
-    tracker = DeepMosse(init_img, gt_boxes[0], config=config, debug=args.debug)
+    gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
+    init_box = gt_boxes[0]
     if args.debug:
-        position = gt_boxes[0]
+        position = init_box
         cv2.rectangle(init_img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
         cv2.imshow('demo', init_img)
         cv2.waitKey(0)
+    tracker = DeepMosse(init_img, init_box, config=config, debug=args.debug)
 
 
     results = []
-    for imgname in imgnames[1:]:
+    for img_idx, imgname in enumerate(imgnames[1:]):
         img = cv2.imread(join(imgdir, imgname))
-        frame_num = int(imgname.split('.')[0])
-        print(imgname)
+        # frame_num = int(imgname.split('.')[0])
+        # print(imgname)
 
         # start = time.time()
         position = tracker.track(img)
@@ -109,9 +111,13 @@ def test_sequence(sequence, write_images=False):
         results.append(position.copy())
 
         if args.debug:
+            if len(gt_boxes) == len(imgnames):  # draw groundtruth if present
+                gt_position = gt_boxes[img_idx + 1]
+                cv2.rectangle(img, (gt_position[0], gt_position[1]), (gt_position[0]+gt_position[2], gt_position[1]+gt_position[3]), (0, 255, 0), 2)
             position = [round(x) for x in position]
             cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
             cv2.imshow('demo', img)
+            print('iou:', bbox_iou(position, gt_position))
             if cv2.waitKey(0) == ord('q'):
                 break
         
@@ -125,7 +131,7 @@ def test_sequence(sequence, write_images=False):
 
 parse = argparse.ArgumentParser()
 parse.add_argument('--config', type=str, default='configs/config.json')
-# parse.add_argument('--sequences', type=str, help='path to a directory with sequences')
+parse.add_argument('--sequences_dir', type=str, help='path to a vot directory with sequences')
 parse.add_argument('--seq', type=str, default='all')
 parse.add_argument('--params_search', action='store_true', default=False)
 parse.add_argument('--debug', action='store_true', default=False)
@@ -136,7 +142,8 @@ with open(args.config, 'r') as json_file:
     config = json.load(json_file)
 
 # DATASET_DIR = '../datasets/VOT2013'
-DATASET_DIR = 'workspace_vot2015/sequences'
+# DATASET_DIR = 'workspace_vot2015/sequences'
+DATASET_DIR = args.sequences_dir
 
 
 
@@ -146,18 +153,23 @@ if args.seq == 'all':
 else:
     sequences = [args.seq]
 
+# sequences = sequences[::2]
+print('{} sequence(s):'.format(len(sequences)))
 print(sequences)
-show_VOT_dataset(DATASET_DIR, sequences=sequences, draw_trajectory=False, standard='vot2015', mosaic=False)
+# show_VOT_dataset(DATASET_DIR, sequences=sequences, draw_trajectory=False, standard='vot2015', mosaic=False)
 
 best_score = 0
 best_params = []
 
-if args.params_search: 
-
-    for sigma in range(1, 20):
-        for lr in list(np.linspace(0.025, 0.5, 10)):
-            config.sigma = sigma
-            config.lr = lr
+if args.params_search:
+    with open('params_search.txt', 'w+') as file:
+        now = datetime.datetime.now()
+        dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
+        file.write('Params search started on ' + dt_string + '\n')
+    for lr in list(np.linspace(0.025, 0.3, 4)):
+        for sigma in range(2, 20):
+            config['sigma'] = sigma
+            config['lr'] = lr
             ious_per_sequence = {}
             for sequence in sequences:
                 results, gt_boxes = test_sequence(sequence)
@@ -168,16 +180,27 @@ if args.params_search:
                     ious.append(iou)
 
                 ious_per_sequence[sequence] = np.mean(ious)
+                log_string = "{}: {}".format(sequence, ious_per_sequence[sequence])
+                print(log_string)
 
-            # for k, v in ious_per_sequence.items():
-            #     print(k, v)
+            with open('params_search.txt', 'a') as file:
+                for k, v in ious_per_sequence.items():
+                    log_string = '{}: {}'.format(k, v)
+                    # print(k, v)
+                    file.write(log_string + '\n')       
             score = np.mean(list(ious_per_sequence.values()))
             if score > best_score:
                 best_score = score
                 best_params = [sigma, lr]
-            print('[{:.3f}, {:.3f}]: {:.3f}\tbest: {:.3f}'.format(sigma, lr, score, best_score))
+            log_string = '[{:.3f}, {:.3f}]: {:.3f}\tbest: {:.3f}'.format(sigma, lr, score, best_score)
+            with open('params_search.txt', 'a') as file:
+                file.write(log_string + '\n')
+            print(log_string)
 
-    print('Finished. Best score:', best_score, 'best params:', best_params)
+    log_string = 'Finished. Best score:', best_score, 'best params:', best_params
+    with open('params_search.txt', 'a') as file:
+        file.write(log_string)
+    print(log_string)
 
 else:
     ious_per_sequence = {}

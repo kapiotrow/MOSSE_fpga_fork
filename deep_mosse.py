@@ -69,15 +69,16 @@ class DeepMosse:
     def __init__(self, init_frame, init_position, config, debug=False):
         # self.backbone = get_CF_backbone(net_config_path, net_weights_path)
         args = EasyDict(config)
+        # print('INITIALIZED with sigma lr:', args.sigma, args.lr)
         args.debug = debug
-        print('config:', args)
+        # print('config:', args)
         if args.deep:
             self.backbone_device = torch.device('cuda:0')
             if args.quantized:
-                print('ITS SO DEEP QUANTIZED')
-                self.use_quant_features = True
-                self.quant_scaling = np.load('/home/vision/danilowi/CF_tracking/MOSSE_fpga/deployment/Mul_0_param0.npy')
-                self.backbone = get_finnlayer('/home/vision/danilowi/CF_tracking/MOSSE_fpga/output/finnlayer_weights/savegame_0_15000.pth.tar',
+                # print('ITS SO DEEP QUANTIZED')
+                self.use_quant_features = False
+                self.quant_scaling = np.load('/home/vision/danilowi/CF_tracking/MOSSE_fpga/deployment/Mul_0_param0.npy') if self.use_quant_features else None
+                self.backbone = get_finnlayer(args.quant_weights,
                                               channels=args.channels,
                                               strict=False)
             else:

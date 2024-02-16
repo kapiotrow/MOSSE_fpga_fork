@@ -65,7 +65,25 @@ def pre_process(img):
     return img
 
 
-def load_gt(gt_file, format='xyxy', standard='vot2015'):
+# input is a list of 4 points: [X1, Y1, X2, Y2, X3, Y3, X4, Y4]
+# output is [x, y, w, h]
+def check_bbox(points):
+
+    Xs = points[::2]    # odd coords
+    Ys = points[1::2]   # even coords
+
+    left = min(Xs)
+    right = max(Xs)
+    top = min(Ys)
+    bottom = max(Ys)
+
+    width = right - left
+    height = bottom - top
+
+    return [left, top, width, height]
+
+
+def load_gt(gt_file, format='xyxy'):
 
     with open(gt_file, 'r') as file:
         lines = file.readlines()
@@ -78,11 +96,12 @@ def load_gt(gt_file, format='xyxy', standard='vot2015'):
             break
     lines = [[int(float(coord)) for coord in line] for line in lines]
     
-    if standard == 'vot2013':
-        result = lines
-    else:
-        test_line = lines[0]
-        result = [[line[0], line[1], line[2]-line[0], line[5]-line[1]] for line in lines]
+    # if standard == 'vot2013':
+    #     result = lines
+    # else:
+    #     test_line = lines[0]
+    #     result = [[line[0], line[1], line[2]-line[0], line[5]-line[1]] for line in lines]
+    result = [check_bbox(line) for line in lines]
 
     # returns in xywh format
     return result
