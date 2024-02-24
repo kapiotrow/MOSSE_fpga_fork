@@ -6,6 +6,7 @@ from torch.nn import Module
 import torchvision.models as models
 import json
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
 from finnmodels import YOLO_finn
 
@@ -14,12 +15,24 @@ def init_seeds(seed=0):
     np.random.seed(seed)
 
 
-def get_VGG_backbone(pretrained=True):
+def get_VGG_backbone(version='vgg11', pretrained=True):
 
-    vgg = models.vgg11(pretrained=pretrained, progress=True)
+    versions = ['vgg11', 'vgg19']
+    assert version in versions, '\"{}\" not recognized as vgg version, the possible versions are: {}'.format(version, versions)
+
+    if version == 'vgg11':
+        vgg = models.vgg11(pretrained=pretrained, progress=True)
+        vgg = vgg.features[:3]
+    elif version == 'vgg19':
+        vgg = models.vgg19(pretrained=pretrained, progress=True)
+        vgg = vgg.features[:5]
+
+    print('Using VGG features:')
+    print(vgg)
+
     vgg.eval()
 
-    return vgg.features[:3]
+    return vgg
 
 
 def get_CF_backbone(config_path, weights_path):
@@ -64,6 +77,54 @@ def pre_process(img):
 
     return img
 
+
+def plot_params_search(filepath):
+
+    with open(filepath, "r") as file:
+        lines = file.readlines()
+    
+    lines = [line for line in lines if '[' in line]
+    # print(lines)
+    # for line in lines:
+    #     print(line)
+
+    sigma_lr = [line.split(']')[0].strip('[').split(',') for line in lines]
+    sigmas = [float(line[0]) for line in sigma_lr]
+    lrs = [float(line[1].strip()) for line in sigma_lr]
+    ious = [float(line.split(':')[1].split()[0]) for line in lines]
+    iou_dict = {}
+    for s, l, i in zip(sigmas, lrs, ious):
+        iou_dict[(s, l)] = i
+    sigmas = np.unique(sigmas)
+    lrs = np.unique(lrs)
+    X, Y = np.meshgrid(sigmas, lrs)
+    Z = np.zeros_like(X)
+    # print(X.shape, Y.shape, Z.shape)
+    # print(X)
+    # print(Y)
+    for x, s in enumerate(sigmas):
+        for y, l in enumerate(lrs):
+            if (s, l) in iou_dict:
+                Z[y, x] = iou_dict[(s, l)]
+    # for k, v in iou_dict.items():
+    #     print(k, v)
+    # print(Z)
+    fig, ax = plt.subplots(subplot_kw={"projection": "3d"})
+    surf = ax.plot_surface(X, Y, Z, cmap=cm.coolwarm,
+                           linewidth=0, antialiased=False)
+    ax.set_xlabel('Sigma')
+    ax.set_ylabel('lr')
+    ax.set_zlabel('iou')
+    ax.set_xticks(sigmas)
+    ax.set_yticks(lrs)
+    plt.savefig('params_search.png')
+    plt.show()
+    
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection='3d')
+    # ax.scatter(sigmas, lrs, ious)
+    # plt.show()
+    
 
 # input is a list of 4 points: [X1, Y1, X2, Y2, X3, Y3, X4, Y4]
 # output is [x, y, w, h]

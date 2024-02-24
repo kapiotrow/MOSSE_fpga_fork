@@ -8,7 +8,7 @@ import datetime
 import matplotlib.pyplot as plt
 import json
 
-from utils import bbox_iou, load_gt, init_seeds, check_bbox
+from utils import bbox_iou, load_gt, init_seeds, check_bbox, plot_params_search
 from mosse import mosse
 from deep_mosse import DeepMosse
 
@@ -90,12 +90,12 @@ def test_sequence(sequence, write_images=False):
     init_img = cv2.imread(join(imgdir, imgnames[0]))
     gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
     init_box = gt_boxes[0]
+    tracker = DeepMosse(init_img, init_box, config=config, debug=args.debug)
     if args.debug:
         position = init_box
         cv2.rectangle(init_img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
         cv2.imshow('demo', init_img)
         cv2.waitKey(0)
-    tracker = DeepMosse(init_img, init_box, config=config, debug=args.debug)
 
 
     results = []
@@ -117,7 +117,7 @@ def test_sequence(sequence, write_images=False):
             position = [round(x) for x in position]
             cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
             cv2.imshow('demo', img)
-            print('iou:', bbox_iou(position, gt_position))
+            # print('iou:', bbox_iou(position, gt_position))
             if cv2.waitKey(0) == ord('q'):
                 break
         
@@ -153,7 +153,6 @@ if args.seq == 'all':
 else:
     sequences = [args.seq]
 
-# sequences = sequences[::2]
 print('{} sequence(s):'.format(len(sequences)))
 print(sequences)
 # show_VOT_dataset(DATASET_DIR, sequences=sequences, draw_trajectory=False, standard='vot2015', mosaic=False)
@@ -162,12 +161,13 @@ best_score = 0
 best_params = []
 
 if args.params_search:
+    # sequences = sequences[::2]
     with open('params_search.txt', 'w+') as file:
         now = datetime.datetime.now()
         dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
         file.write('Params search started on ' + dt_string + '\n')
     for lr in list(np.linspace(0.025, 0.3, 4)):
-        for sigma in range(2, 20):
+        for sigma in range(1, 20):
             config['sigma'] = sigma
             config['lr'] = lr
             ious_per_sequence = {}
@@ -197,6 +197,7 @@ if args.params_search:
                 file.write(log_string + '\n')
             print(log_string)
 
+    plot_params_search('params_search.txt')
     log_string = 'Finished. Best score:', best_score, 'best params:', best_params
     with open('params_search.txt', 'a') as file:
         file.write(log_string)
