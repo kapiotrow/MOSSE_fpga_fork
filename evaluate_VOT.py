@@ -23,23 +23,21 @@ def show_VOT_dataset(dataset_path, sequences=None, draw_trajectory=False, standa
         sequences = [seq for seq in sequences if os.path.isdir(join(dataset_path, seq))]
     # sequences = ['david', 'iceskater', 'face', 'singer', 'bicycle', 'bolt']
 
-    imgs_per_seq = 6
-    mosaic_type = 'rowwise'
-    if mosaic_type == 'rowwise':
-        f, axarr = plt.subplots(len(sequences), imgs_per_seq)
-    else:
-        f, axarr = plt.subplots(imgs_per_seq, len(sequences))
-
     for i_seq, seq in enumerate(sequences):
         seqpath = join(dataset_path, seq)
         imgpath = join(seqpath, 'color')
-        gt = load_gt(join(seqpath, 'groundtruth.txt'), standard=standard)
+        gt = load_gt(join(seqpath, 'groundtruth.txt'))
         imgnames = os.listdir(imgpath)
         imgnames.sort()
         trajectory = []
 
         if mosaic:
-            
+            imgs_per_seq = 6
+            mosaic_type = 'rowwise'
+            if mosaic_type == 'rowwise':
+                f, axarr = plt.subplots(len(sequences), imgs_per_seq)
+            else:
+                f, axarr = plt.subplots(imgs_per_seq, len(sequences))
             img_indices = list(np.linspace(0, len(imgnames)-1, imgs_per_seq))
             img_indices = [int(el) for el in img_indices]
             # print('indices:', img_indices)
