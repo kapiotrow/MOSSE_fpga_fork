@@ -8,10 +8,13 @@
     "channels": 32,
     "lr": 0.025,
     "sigma": 7,
-    "lambd": 0.01,
+    "lambd": 0.0001,
     "search_region_scale": 2,
     "clip_search_region": false,
     "border_type": "reflect",
     "num_scales": 5,
-    "scale_factor": 1.01
+    "scale_factor": 1.02,
+    "lr_scale": 0.025,
+    "scale_sigma_factor": 3,
+    "scale_step": 1.02 
 }
