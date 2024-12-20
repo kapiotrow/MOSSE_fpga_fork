@@ -88,6 +88,7 @@ def test_sequence(sequence, write_images=False):
     init_img = cv2.imread(join(imgdir, imgnames[0]))
     gt_boxes = load_gt(join(seqdir, 'groundtruth.txt'))
     init_box = gt_boxes[0]
+    print(init_box)
     tracker = DeepMosse(init_img, init_box, config=config, debug=args.debug)
     if args.debug:
         position = init_box
@@ -103,7 +104,7 @@ def test_sequence(sequence, write_images=False):
         # print(imgname)
 
         # start = time.time()
-        position = tracker.track(img)
+        position = tracker.track(img, True)
         # print('fps:', 1/(time.time() - start))
 
         results.append(position.copy())
@@ -123,6 +124,8 @@ def test_sequence(sequence, write_images=False):
             position = [round(x) for x in position]
             cv2.rectangle(img, (position[0], position[1]), (position[0]+position[2], position[1]+position[3]), (255, 0, 0), 2)
             cv2.imwrite('./output/images/{:03d}.png'.format(tracker.current_frame), img)
+            cv2.imshow("output", img)
+            cv2.waitKey(1)
 
     return results, gt_boxes
 
@@ -218,4 +221,3 @@ else:
     # for k, v in ious_per_sequence.items():
     #     print(k, v)
     print('Mean IoU:', np.mean(list(ious_per_sequence.values())))
-

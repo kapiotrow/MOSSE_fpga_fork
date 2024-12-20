@@ -123,6 +123,28 @@ class DeepMosse:
         self.initialize(init_frame, init_position)
         self.current_frame = 1
 
+        self.base_target_sz = np.array([init_position[3], init_position[2]])
+        self.nScales = 5
+        self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
+        self.scale_sigma = np.sqrt(self.nScales) * self.args.scale_sigma_factor
+        self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) * 1/np.sqrt(2*np.pi * np.power(self.scale_sigma, 2))
+        self.fftys = np.fft.fft(self.ys)
+        self.currentScaleFactor = 1
+        self.ss = np.arange(1, self.nScales+1)
+        self.scaleFactors = np.power(self.args.scale_step, (np.ceil(self.nScales/2) - self.ss))
+        self.min_scale_factor = 0.3
+        self.max_scale_factor = np.power(self.args.scale_step, 
+                                         (np.floor(np.log(np.min(np.divide(np.array([len(init_frame[0]), len(init_frame[1])]), self.base_target_sz)))
+                                                    / np.log(self.args.scale_step))))
+        if np.mod(self.nScales, 2) == 0:
+            self.scale_window = np.hanning(self.nScales + 1)
+            self.scale_window = self.scale_window[1:]
+        else:
+            self.scale_window = np.hanning(self.nScales)
+        self.scale_model_factor = 1
+        self.scale_model_sz = np.floor(self.base_target_sz * self.scale_model_factor).astype(int)
+        self.initialize_scale(init_frame, init_position)
+
 
     #bbox: [xmin, ymin, w, h]
     def crop_search_window(self, bbox, frame, scale=1, debug='test', scale_idx=0, ignore_buffering=False):
@@ -198,6 +220,44 @@ class DeepMosse:
                             self.args.buffered_padding : -self.args.buffered_padding]
 
         return window
+    
+
+    def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_window, scale_model_sz):
+        nScales = len(scaleFactors)
+
+        for s in range(nScales):
+            patch_sz = np.floor(base_target_sz*scaleFactors[s]).astype(int)
+
+            xs = np.floor(pos[0]+(pos[2]/2)) + np.arange(patch_sz[1]) - np.floor(patch_sz[1]/2)
+            ys = np.floor(pos[1]+(pos[3]/2)) + np.arange(patch_sz[0]) - np.floor(patch_sz[0]/2)
+
+            # print("patch_sz: ", patch_sz)
+            # print("xs: ", xs)
+            # print("ys: ", ys)
+            # print("self.currentScaleFactor: ", self.currentScaleFactor)
+            # print("self.scaleFactors: ", self.scaleFactors)
+
+            xs = [0 if i<0 else i for i in xs]
+            ys = [0 if i<0 else i for i in ys]
+            xs = [len(frame[1])-1 if i>=len(frame[1]) else i for i in xs]
+            ys = [len(frame[0])-1 if i>=len(frame[0]) else i for i in ys]
+
+            xs = np.array(xs)
+            ys = np.array(ys)
+
+            xs = xs.astype(int)
+            ys = ys.astype(int)
+
+            im_patch = frame[ys[0]:ys[-1], xs[0]:xs[-1], :]
+            im_patch_resized = cv2.resize(im_patch, [scale_model_sz[1], scale_model_sz[0]], interpolation=cv2.INTER_LINEAR)
+            temp = self.extract_features(im_patch_resized)
+
+            if s == 0:
+                out = np.zeros((temp.size, nScales))
+
+            out[:, s] = temp.flatten('F') * scale_window[s]
+
+        return out
 
 
     def extract_features(self, window):
@@ -271,6 +331,15 @@ class DeepMosse:
         # print('frame 0:', (0, 0))
         # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
+    
+    def initialize_scale(self, init_frame, init_position):
+        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors * self.currentScaleFactor, 
+                                           self.scale_window, self.scale_model_sz)
+        fftxs = np.fft.fft(xs, axis=0)
+        self.sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
+        self.sf_denum = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
+        self.target_sz = np.floor(self.base_target_sz * self.currentScaleFactor)
+
 
     def predict(self, frame, position, scale=1, scale_idx=None):
 
@@ -307,25 +376,60 @@ class DeepMosse:
             cv2.imshow('response', gi)   
 
         return gi
+        
+    
+    def predict_scale(self, frame, pos):
+        xs = self.crop_scale_search_window(pos, frame, self.base_target_sz, self.currentScaleFactor * self.scaleFactors, 
+                                           self.scale_window, self.scale_model_sz)
+        fftxs = np.fft.fft(xs, axis=0)
+        # scale_response = np.real(np.fft.ifft(np.divide(np.sum(np.multiply(self.sf_num, fftxs), axis=0), (self.sf_denum + self.args.lambd)), axis=0))
+        scale_response = np.real(np.fft.ifft(np.divide(np.sum(np.multiply(np.conjugate(self.sf_num), fftxs), axis=0), 
+                                                        (self.sf_denum + self.args.lambd)), axis=0))
+        sf_num_conj = np.conjugate(self.sf_num)
+
+        print("scale_response: ", scale_response)
+        print("desired output: ", self.ys)
+        print("current scale fsctor: ", self.currentScaleFactor)
+        print("num: ", self.sf_num)
+        self.currentScaleFactor = self.currentScaleFactor * self.scaleFactors[np.argmax(scale_response)]
+        if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
+        elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
+
+        new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
+        new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
+
+        self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
+        self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
+
+        self.target_sz = np.floor(self.base_target_sz * self.currentScaleFactor)
 
 
-    def predict_multiscale(self, frame):
+    def predict_multiscale(self, frame, DSST=True):
+        # if DSST:
+        #     scale = self.currentScaleFactor
+        #     response = self.predict(frame, self.position, scale)
+        #     self.position, max_response, features_displacement = self.update_position(response, scale)
+        #     self.predict_scale(frame, self.position)
+        if DSST:
+            self.predict_scale(frame, self.position)
+            response = self.predict(frame, self.position, self.currentScaleFactor)
+            self.position, max_response, features_displacement = self.update_position(response, self.currentScaleFactor)
+        else:
+            best_response = 0
+            for scale_idx, scale in enumerate(self.scale_multipliers):
+                # print('scale:', scale)
+                response = self.predict(frame, self.position, scale, scale_idx=scale_idx)
+                new_position, max_response, features_displacement = self.update_position(response, scale)
+                if max_response > best_response:
+                    best_response = max_response
+                    best_position = new_position
+                    if self.buffer_features_for_update:
+                        self.best_scale_idx = scale_idx
+                        self.best_features_displacement = features_displacement
+                        print('frame {}:'.format(self.current_frame), features_displacement)
 
-        best_response = 0
-        for scale_idx, scale in enumerate(self.scale_multipliers):
-            # print('scale:', scale)
-            response = self.predict(frame, self.position, scale, scale_idx=scale_idx)
-            new_position, max_response, features_displacement = self.update_position(response, scale)
-            if max_response > best_response:
-                best_response = max_response
-                best_position = new_position
-                if self.buffer_features_for_update:
-                    self.best_scale_idx = scale_idx
-                    self.best_features_displacement = features_displacement
-                    print('frame {}:'.format(self.current_frame), features_displacement)
-
-        self.position = best_position
-        # print('position:', self.position)
+            self.position = best_position
+            print('position:', self.position)
 
 
     def update(self, frame):
@@ -412,11 +516,11 @@ class DeepMosse:
         # self.clip_pos = self.clip_pos.astype(np.int64)
 
 
-    def track(self, image):
+    def track(self, image, DSST=True):
       
         if not self.target_lost:
             # response = self.predict(image, self.position)
-            self.predict_multiscale(image)
+            self.predict_multiscale(image, DSST)
             # self.update_position(response)
             self.check_position()
 
