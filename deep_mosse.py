@@ -124,10 +124,11 @@ class DeepMosse:
         self.current_frame = 1
 
         self.base_target_sz = np.array([init_position[3], init_position[2]])
-        self.nScales = 5
+        self.nScales = 5 #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
         self.scale_sigma = np.sqrt(self.nScales) * self.args.scale_sigma_factor
-        self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) * 1/np.sqrt(2*np.pi * np.power(self.scale_sigma, 2))
+        self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) \
+                  * 1/np.sqrt(2*np.pi * np.power(self.scale_sigma, 2)) # desired output - gaussian-shaped peak
         self.fftys = np.fft.fft(np.reshape(self.ys, (1, self.nScales)), axis=0)
         self.currentScaleFactor = 1
         self.ss = np.arange(1, self.nScales+1)
@@ -222,20 +223,29 @@ class DeepMosse:
         return window
     
 
-    def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_window, scale_model_sz):
-        nScales = len(scaleFactors)
+    def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_model_sz):
+        """
+        Extract target sample.
 
-        for s in range(nScales):
+        Extracts patches from frame, maps each to a feature vector (column) and
+        concatenates them into a matrix.
+
+        Args:
+            pos: current estimated target position
+            frame: current frame
+            base_target_sz: size of the tracked object from the init frame
+            scaleFactors: vector of scale factors
+            scale_model_sz:
+
+        Returns:
+            out: matrix whose columns represent the target in different scales
+        """
+
+        for s in range(self.nScales): # iterate through all considered scale factors
             patch_sz = np.ceil(base_target_sz*scaleFactors[s]).astype(int)
 
             xs = np.floor(pos[0]+(pos[2]/2)) + np.arange(patch_sz[1]) - np.floor(patch_sz[1]/2)
             ys = np.floor(pos[1]+(pos[3]/2)) + np.arange(patch_sz[0]) - np.floor(patch_sz[0]/2)
-
-            # print("patch_sz: ", patch_sz)
-            # print("xs: ", xs)
-            # print("ys: ", ys)
-            # print("self.currentScaleFactor: ", self.currentScaleFactor)
-            # print("self.scaleFactors: ", self.scaleFactors)
 
             xs = [0 if i<0 else i for i in xs]
             ys = [0 if i<0 else i for i in ys]
@@ -252,12 +262,11 @@ class DeepMosse:
             im_patch_resized = cv2.resize(im_patch, [scale_model_sz[1], scale_model_sz[0]], interpolation=cv2.INTER_LINEAR)
             #temp = self.extract_features(im_patch_resized)
             temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY)
-            cv2.imshow("dupa", temp)
 
             if s == 0:
-                out = np.zeros((temp.size, nScales))
+                out = np.zeros((temp.size, self.nScales))
 
-            out[:, s] = temp.flatten('F') #* scale_window[s]
+            out[:, s] = temp.flatten('F') # flatten the extracted patch features into a column vector
 
         return out
 
@@ -334,16 +343,23 @@ class DeepMosse:
         # self.clip_pos = np.array([self.position[0], self.position[1], self.position[0]+self.position[2], self.position[1]+self.position[3]]).astype(np.int64)
 
     
-    def initialize_scale(self, init_frame, init_position):
-        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, 
-                                           self.scale_window, self.scale_model_sz)
+    def initialize_scale(self, init_frame, init_position) ->None:
+        """
+        Initialize the correlation filter used for scale estimation.
+
+        Args:
+            init_frame: first frame of the stream
+            init_position: tracked object's position
+
+        Returns:
+            None
+        """
+        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
-        # self.sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
-        # self.sf_denum = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
         self.sf_num = np.multiply(fftxs, np.conjugate(self.fftys))
         self.sf_denum = np.multiply(fftxs, np.conjugate(fftxs) + self.args.lambd)
         self.sf_denum = np.sum(self.sf_denum, axis=0)
-        self.Yi = np.divide(self.sf_num, self.sf_denum)
+        self.Yi = np.divide(self.sf_num, self.sf_denum) # correlation filter for DSST
         self.target_sz = np.ceil(self.base_target_sz)
 
 
@@ -384,37 +400,26 @@ class DeepMosse:
         return gi
         
     
-    def predict_scale(self, frame, pos):
-        xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, 
-                                           self.scale_window, self.scale_model_sz)
+    def predict_scale(self, frame, pos) -> None:
+        """
+        Predict the tracked object's scale using DSST.
+
+        Args:
+            frame: current frame
+            pos: last estimated position of the tracked object
+
+        Returns:
+            None
+        """
+        xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
-        # scale_response = np.real(np.fft.ifft(np.divide(np.sum(np.multiply(self.sf_num, fftxs), axis=0), (self.sf_denum + self.args.lambd)), axis=0))
-        # scale_response = np.abs(np.fft.ifft(np.divide(np.sum(np.multiply(np.conjugate(self.sf_num), fftxs), axis=0), 
-        #                                                 (self.sf_denum + self.args.lambd)), axis=0))
-        
-        # sf_num_conj = np.conjugate(self.sf_num)
-        # num_times_fftxs = np.multiply(sf_num_conj, fftxs)
-        # summ = np.sum(num_times_fftxs, axis=0)
-        # scale_response = np.divide(summ, self.sf_denum + self.args.lambd)
-        # scale_response = np.fft.ifft(np.reshape(scale_response, (1,self.nScales)), axis=0)
-        # scale_response = np.abs(scale_response)
-
-
-        # scale_response = np.conjugate(np.divide(self.sf_num, self.sf_denum + self.args.lambd))
-        # scale_response = np.multiply(scale_response, fftxs)
-        # scale_response = np.sum(scale_response, axis=0)
-        # scale_response = np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0)
-        # scale_response = np.real(scale_response)
-        # # scale_response = np.real(np.fft.ifft(np.sum(np.multiply(np.conjugate(np.divide(self.sf_num, self.sf_denum+self.args.lambd)), 
-        # #                                                         fftxs), axis=0), axis=0))
         scale_response = np.multiply(self.Yi, fftxs)
-        scale_response = np.sum(scale_response, axis = 0)
+        scale_response = np.sum(scale_response, axis = 0) # sum the columns
         scale_response = np.real(np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0))
 
-        print("scale_response: ", scale_response, end = "\t")
-        print("scale_response index: ", np.argmax(scale_response))
-        # print("desired output: ", self.ys)
-        self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)]
+        # print("scale_response: ", scale_response, end = "\t")
+        # print("scale_response index: ", np.argmax(scale_response))
+        self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
         self.best_scale_idx = np.argmax(scale_response)
         print("current scale factor: ", self.currentScaleFactor)
         if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
@@ -428,24 +433,33 @@ class DeepMosse:
 
         self.Yi = np.divide(self.sf_num, self.sf_denum)
 
-        # print("new_sf_num: ", new_sf_num)
-        # print("new_sf_denum: ", new_sf_den)
-
         self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
-        print("target size: ", self.target_sz)
 
 
-    def predict_multiscale(self, frame, DSST=True):
-        if DSST:
-            response = self.predict(frame, self.position, self.currentScaleFactor)
+    def predict_multiscale(self, frame, DSST=True) -> None:
+        """
+        Predict target translation and scale. 
+
+        Combines MOSSE correlation filter on convolutional features with either 
+        DSST or multiscale approach.
+
+        Args:
+            frame: current frame
+            DSST: True if DSST is to be used
+
+        Returns:
+            None
+        """
+        if DSST: # use DSST correlation filter
+            response = self.predict(frame, self.position, self.currentScaleFactor) # first find the target location
             self.position, max_response, self.best_features_displacement = self.update_position(response, self.currentScaleFactor)
-            # print("bbox: ", (self.position[2], self.position[3]))
-            self.predict_scale(frame, self.position)
+            self.predict_scale(frame, self.position) # then update the scale (translation usually changes faster than scale)
         # if DSST:
         #     self.predict_scale(frame, self.position)
         #     response = self.predict(frame, self.position, self.currentScaleFactor)
         #     self.position, max_response, features_displacement = self.update_position(response, self.currentScaleFactor)
-        else:
+        
+        else: # compute MOSSE CF for multiple scales and use the best response
             best_response = 0
             for scale_idx, scale in enumerate(self.scale_multipliers):
                 # print('scale:', scale)
