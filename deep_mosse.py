@@ -223,13 +223,10 @@ class DeepMosse:
     
 
     def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_window, scale_model_sz):
-        """
-        Extracting image patches
-        """
         nScales = len(scaleFactors)
 
         for s in range(nScales):
-            patch_sz = np.floor(base_target_sz*scaleFactors[s]).astype(int)
+            patch_sz = np.ceil(base_target_sz*scaleFactors[s]).astype(int)
 
             xs = np.floor(pos[0]+(pos[2]/2)) + np.arange(patch_sz[1]) - np.floor(patch_sz[1]/2)
             ys = np.floor(pos[1]+(pos[3]/2)) + np.arange(patch_sz[0]) - np.floor(patch_sz[0]/2)
@@ -253,7 +250,9 @@ class DeepMosse:
 
             im_patch = frame[ys[0]:ys[-1], xs[0]:xs[-1], :]
             im_patch_resized = cv2.resize(im_patch, [scale_model_sz[1], scale_model_sz[0]], interpolation=cv2.INTER_LINEAR)
-            temp = self.extract_features(im_patch_resized)
+            #temp = self.extract_features(im_patch_resized)
+            temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY)
+            cv2.imshow("dupa", temp)
 
             if s == 0:
                 out = np.zeros((temp.size, nScales))
@@ -336,12 +335,16 @@ class DeepMosse:
 
     
     def initialize_scale(self, init_frame, init_position):
-        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors * self.currentScaleFactor, 
+        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, 
                                            self.scale_window, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
-        self.sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
-        self.sf_denum = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
-        self.target_sz = np.floor(self.base_target_sz * self.currentScaleFactor)
+        # self.sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
+        # self.sf_denum = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
+        self.sf_num = np.multiply(fftxs, np.conjugate(self.fftys))
+        self.sf_denum = np.multiply(fftxs, np.conjugate(fftxs) + self.args.lambd)
+        self.sf_denum = np.sum(self.sf_denum, axis=0)
+        self.Yi = np.divide(self.sf_num, self.sf_denum)
+        self.target_sz = np.ceil(self.base_target_sz)
 
 
     def predict(self, frame, position, scale=1, scale_idx=None):
@@ -382,51 +385,60 @@ class DeepMosse:
         
     
     def predict_scale(self, frame, pos):
-        xs = self.crop_scale_search_window(pos, frame, self.base_target_sz, self.currentScaleFactor * self.scaleFactors, 
+        xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, 
                                            self.scale_window, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
         # scale_response = np.real(np.fft.ifft(np.divide(np.sum(np.multiply(self.sf_num, fftxs), axis=0), (self.sf_denum + self.args.lambd)), axis=0))
         # scale_response = np.abs(np.fft.ifft(np.divide(np.sum(np.multiply(np.conjugate(self.sf_num), fftxs), axis=0), 
         #                                                 (self.sf_denum + self.args.lambd)), axis=0))
         
-        sf_num_conj = np.conjugate(self.sf_num)
-        num_times_fftxs = np.multiply(sf_num_conj, fftxs)
-        summ = np.sum(num_times_fftxs, axis=0)
+        # sf_num_conj = np.conjugate(self.sf_num)
+        # num_times_fftxs = np.multiply(sf_num_conj, fftxs)
+        # summ = np.sum(num_times_fftxs, axis=0)
+        # scale_response = np.divide(summ, self.sf_denum + self.args.lambd)
+        # scale_response = np.fft.ifft(np.reshape(scale_response, (1,self.nScales)), axis=0)
+        # scale_response = np.abs(scale_response)
 
-        # print("sum: ", summ)
-        print("denum: ", self.sf_denum)
-        scale_response = np.divide(summ, self.sf_denum + self.args.lambd)
-        # print("fft scale response: ", scale_response)
-        scale_response = np.fft.ifft(np.reshape(scale_response, (1,self.nScales)), axis=0)
-        scale_response = np.abs(scale_response)
-        # print("real scale response: ", scale_response)
+
+        # scale_response = np.conjugate(np.divide(self.sf_num, self.sf_denum + self.args.lambd))
+        # scale_response = np.multiply(scale_response, fftxs)
+        # scale_response = np.sum(scale_response, axis=0)
+        # scale_response = np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0)
+        # scale_response = np.real(scale_response)
         # # scale_response = np.real(np.fft.ifft(np.sum(np.multiply(np.conjugate(np.divide(self.sf_num, self.sf_denum+self.args.lambd)), 
         # #                                                         fftxs), axis=0), axis=0))
+        scale_response = np.multiply(self.Yi, fftxs)
+        scale_response = np.sum(scale_response, axis = 0)
+        scale_response = np.real(np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0))
+
         print("scale_response: ", scale_response, end = "\t")
-        print("scale_response index: ", np.argmax(scale_response), end = "\t")
+        print("scale_response index: ", np.argmax(scale_response))
         # print("desired output: ", self.ys)
+        self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)]
+        self.best_scale_idx = np.argmax(scale_response)
         print("current scale factor: ", self.currentScaleFactor)
-        # print("scaleFactors: ", self.scaleFactors)
-        self.currentScaleFactor = 1/self.scaleFactors[np.argmax(scale_response)]
         if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
         elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
 
-        new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
-        new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
+        new_sf_num = np.multiply(np.conjugate(fftxs), self.fftys)
+        new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs + self.args.lambd), axis=0)
 
         self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
         self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
 
+        self.Yi = np.divide(self.sf_num, self.sf_denum)
+
         # print("new_sf_num: ", new_sf_num)
         # print("new_sf_denum: ", new_sf_den)
 
-        self.target_sz = np.floor(self.base_target_sz * self.currentScaleFactor)
+        self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
+        print("target size: ", self.target_sz)
 
 
     def predict_multiscale(self, frame, DSST=True):
         if DSST:
             response = self.predict(frame, self.position, self.currentScaleFactor)
-            self.position, max_response, features_displacement = self.update_position(response, self.currentScaleFactor)
+            self.position, max_response, self.best_features_displacement = self.update_position(response, self.currentScaleFactor)
             # print("bbox: ", (self.position[2], self.position[3]))
             self.predict_scale(frame, self.position)
         # if DSST:
