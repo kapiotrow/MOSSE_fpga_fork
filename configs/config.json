@@ -14,7 +14,7 @@
     "border_type": "reflect",
     "num_scales": 5,
     "scale_factor": 1.02,
-    "lr_scale": 0.025,
+    "lr_scale": 0.125,
     "scale_sigma_factor": 7,
     "scale_step": 1.02 
 }

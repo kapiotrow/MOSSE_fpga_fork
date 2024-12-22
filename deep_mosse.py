@@ -501,7 +501,7 @@ class DeepMosse:
                     y_position_in_window : y_position_in_window+self.features_width,
                     x_position_in_window : x_position_in_window+self.features_width]
         else:
-            fi = self.crop_search_window(self.position, frame, debug='update', ignore_buffering=True)
+            fi = self.crop_search_window(self.position, frame, scale=self.currentScaleFactor, debug='update', ignore_buffering=True)
             # print('update features dtype:', fi.dtype)
         fi = self.pre_process(fi)
 

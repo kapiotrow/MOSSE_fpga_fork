@@ -38,6 +38,7 @@ class Cam(object):
         # self.frame = np.reshape(img, (msg.height, msg.width, 3))
         # frame_gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         self.frame = self.bridge.imgmsg_to_cv2(msg, "passthrough")
+        self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
         frame_gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         if self.tracker==None:
             self.tracker = DeepMosse(self.frame, self.load_gt("groundtruth.txt")[0], config=self.config)
