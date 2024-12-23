@@ -124,9 +124,9 @@ class DeepMosse:
         self.current_frame = 1
 
         self.base_target_sz = np.array([init_position[3], init_position[2]])
-        self.nScales = 5 #number of scales (DSST)
+        self.nScales = 33 #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
-        self.scale_sigma = np.sqrt(self.nScales) * self.args.scale_sigma_factor
+        self.scale_sigma = self.args.scale_sigma_factor
         self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) \
                   * 1/np.sqrt(2*np.pi * np.power(self.scale_sigma, 2)) # desired output - gaussian-shaped peak
         self.fftys = np.fft.fft(np.reshape(self.ys, (1, self.nScales)), axis=0)
@@ -413,7 +413,7 @@ class DeepMosse:
         """
         xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
-        scale_response = np.multiply(self.Yi, fftxs)
+        scale_response = np.multiply(np.conjugate(self.Yi), fftxs)
         scale_response = np.sum(scale_response, axis = 0) # sum the columns
         scale_response = np.real(np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0))
 
@@ -425,7 +425,7 @@ class DeepMosse:
         if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
         elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
 
-        new_sf_num = np.multiply(np.conjugate(fftxs), self.fftys)
+        new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
         new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs + self.args.lambd), axis=0)
 
         self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num

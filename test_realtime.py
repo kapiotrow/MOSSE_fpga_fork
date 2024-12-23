@@ -11,9 +11,7 @@ from std_msgs.msg import Bool
 import numpy as np
 from std_msgs.msg import Int32MultiArray
 from cv_bridge import CvBridge
-
-
-my_absolute_dirpath = os.path.abspath(os.path.dirname(__file__))
+from ultralytics import YOLO
 
 
 class Cam(object):
@@ -27,6 +25,8 @@ class Cam(object):
         self.bridge = CvBridge()
         self.fileno = 0
         self.config = None
+        self.my_absolute_dirpath = os.path.abspath(os.path.dirname(__file__))
+        self.modelYOLO = YOLO(self.my_absolute_dirpath + "/runs/detect/train13/weights/best.pt")
         with open('configs/config.json', 'r') as json_file:
             self.config = json.load(json_file)
         rospy.Subscriber('/iris/usb_cam/image_raw', Image, self.camera_sub_callback)
@@ -41,7 +41,21 @@ class Cam(object):
         self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
         frame_gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         if self.tracker==None:
-            self.tracker = DeepMosse(self.frame, self.load_gt("groundtruth.txt")[0], config=self.config)
+            results = self.modelYOLO(self.frame)
+            init_bbox = results[0]
+            print(init_bbox.names[0])
+            init_bbox.show()
+            init_bbox = init_bbox.boxes.xywh.cpu()
+            init_bbox = init_bbox[0]
+            if init_bbox != None:
+                self.tracker = DeepMosse(self.frame, [int(init_bbox[0] - (init_bbox[2]/2)), int(init_bbox[1] - (init_bbox[3]/2)), int(init_bbox[2]), int(init_bbox[3])], 
+                                        config=self.config)
+            else:
+                self.dx = 10
+                self.dy = 0
+                tracker_out = Int32MultiArray()
+                tracker_out.data = [self.dx, self.dy]
+                self.tracker_output_pub.publish(tracker_out)
         else:
             position = self.tracker.track(self.frame)
             position = [round(x) for x in position]
