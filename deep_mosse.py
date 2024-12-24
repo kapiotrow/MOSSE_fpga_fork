@@ -124,7 +124,7 @@ class DeepMosse:
         self.current_frame = 1
 
         self.base_target_sz = np.array([init_position[3], init_position[2]])
-        self.nScales = 33 #number of scales (DSST)
+        self.nScales = 11 #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
         self.scale_sigma = self.args.scale_sigma_factor
         self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) \
@@ -145,6 +145,9 @@ class DeepMosse:
         self.scale_model_factor = 1
         self.scale_model_sz = np.floor(self.base_target_sz * self.scale_model_factor).astype(int)
         self.initialize_scale(init_frame, init_position)
+        self.min_psr= 8.7
+        self.current_psr = self.min_psr + 1
+
 
 
     #bbox: [xmin, ymin, w, h]
@@ -365,6 +368,7 @@ class DeepMosse:
 
     def predict(self, frame, position, scale=1, scale_idx=None):
 
+        self.target_lost = False
         fi = self.crop_search_window(position, frame, scale, debug='predict', scale_idx=scale_idx)
         # print('predict shape:', fi.shape)
         fi = self.pre_process(fi)
@@ -395,12 +399,12 @@ class DeepMosse:
             gi_real = gi/4096
 
         if self.args.debug:
-            cv2.imshow('response', gi)   
+            cv2.imshow('response', gi)
 
         return gi
         
     
-    def predict_scale(self, frame, pos) -> None:
+    def predict_scale(self, frame, pos):
         """
         Predict the tracked object's scale using DSST.
 
@@ -419,21 +423,9 @@ class DeepMosse:
 
         # print("scale_response: ", scale_response, end = "\t")
         # print("scale_response index: ", np.argmax(scale_response))
-        self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
-        self.best_scale_idx = np.argmax(scale_response)
-        print("current scale factor: ", self.currentScaleFactor)
-        if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
-        elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
 
-        new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
-        new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs + self.args.lambd), axis=0)
-
-        self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
-        self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
-
-        self.Yi = np.divide(self.sf_num, self.sf_denum)
-
-        self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
+        return scale_response
+        
 
 
     def predict_multiscale(self, frame, DSST=True) -> None:
@@ -453,7 +445,8 @@ class DeepMosse:
         if DSST: # use DSST correlation filter
             response = self.predict(frame, self.position, self.currentScaleFactor) # first find the target location
             self.position, max_response, self.best_features_displacement = self.update_position(response, self.currentScaleFactor)
-            self.predict_scale(frame, self.position) # then update the scale (translation usually changes faster than scale)
+            scale_response = self.predict_scale(frame, self.position) 
+            self.update_scale(frame, self.position, scale_response) # then update the scale (translation usually changes faster than scale)
         # if DSST:
         #     self.predict_scale(frame, self.position)
         #     response = self.predict(frame, self.position, self.currentScaleFactor)
@@ -532,6 +525,14 @@ class DeepMosse:
         max_value = np.max(gi)
         max_pos = np.where(gi == max_value)
 
+        # check if target was lost
+        self.current_psr = (gi[max_pos] - np.mean(gi)) / (np.std(gi) + self.args.lambd)
+        print(self.current_psr)
+        if self.current_psr < self.min_psr:
+            self.target_lost = True
+            print("Target lost!")
+            return [self.position, None, (0, 0)]
+
         dy = np.mean(max_pos[0]) - gi.shape[0] / 2
         dx = np.mean(max_pos[1]) - gi.shape[1] / 2
         features_displacement = (int(dx), int(dy))
@@ -548,6 +549,38 @@ class DeepMosse:
         new_position = [new_xmin, new_ymin, new_width, new_height]
 
         return new_position, max_value, features_displacement
+    
+    def update_scale(self, frame, pos, scale_response):
+        """
+        Update the DSST correlation filter and current scale factor.
+
+        Args:
+            frame: current frame
+            pos: updated target position as bbox
+            scale_response: result of correlation of DSST filter and current frame
+
+        Returns:
+            None
+        """
+        if not self.target_lost:
+            xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
+            fftxs = np.fft.fft(xs, axis=0)
+            self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
+            self.best_scale_idx = np.argmax(scale_response)
+            # print("current scale factor: ", self.currentScaleFactor)
+            if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
+            elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
+
+            new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
+            new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs + self.args.lambd), axis=0)
+
+            self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
+            self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
+
+            self.Yi = np.divide(self.sf_num, self.sf_denum)
+
+            self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
+
 
 
     def check_position(self):
@@ -572,6 +605,8 @@ class DeepMosse:
             if not self.target_lost:
                 self.update(image)
             self.current_frame += 1
+        
+        self.target_lost = False
 
         return [int(el) for el in self.position]
         
