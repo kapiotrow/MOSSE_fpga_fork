@@ -107,7 +107,7 @@ class DeepMosse:
 
         scale_exponents = [i - np.floor(args.num_scales / 2) for i in range(args.num_scales)]
         self.scale_multipliers = [pow(args.scale_factor, ex) for ex in scale_exponents]
-        self.target_lost = False
+        self.target_not_in_bbox = False
         if args.border_type == 'constant':
             self.border_type = cv2.BORDER_CONSTANT
         elif args.border_type == 'reflect':
@@ -124,7 +124,7 @@ class DeepMosse:
         self.current_frame = 1
 
         self.base_target_sz = np.array([init_position[3], init_position[2]])
-        self.nScales = 11 #number of scales (DSST)
+        self.nScales = self.args.nScales #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
         self.scale_sigma = self.args.scale_sigma_factor
         self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) \
@@ -145,9 +145,11 @@ class DeepMosse:
         self.scale_model_factor = 1
         self.scale_model_sz = np.floor(self.base_target_sz * self.scale_model_factor).astype(int)
         self.initialize_scale(init_frame, init_position)
-        self.min_psr= 8.7
+        self.min_psr = 8.7
         self.current_psr = self.min_psr + 1
-
+        self.target_lost = False
+        self.target_not_in_bbox = False
+        self.target_not_in_bbox_cnt = 0
 
 
     #bbox: [xmin, ymin, w, h]
@@ -368,7 +370,7 @@ class DeepMosse:
 
     def predict(self, frame, position, scale=1, scale_idx=None):
 
-        self.target_lost = False
+        self.target_not_in_bbox = False # reset
         fi = self.crop_search_window(position, frame, scale, debug='predict', scale_idx=scale_idx)
         # print('predict shape:', fi.shape)
         fi = self.pre_process(fi)
@@ -521,18 +523,25 @@ class DeepMosse:
 
     def update_position(self, spatial_response, scale=1):
 
+        if self.target_not_in_bbox_cnt > 20:
+            self.target_lost = True
+            return [self.position, None, (0, 0)]
         gi = spatial_response
         max_value = np.max(gi)
         max_pos = np.where(gi == max_value)
 
-        # check if target was lost
+        # check if target was located in the frame
+        prev_psr_below_min = self.current_psr < self.min_psr
         self.current_psr = (gi[max_pos] - np.mean(gi)) / (np.std(gi) + self.args.lambd)
         print(self.current_psr)
         if self.current_psr < self.min_psr:
-            self.target_lost = True
-            print("Target lost!")
+            self.target_not_in_bbox = True
+            if prev_psr_below_min:
+                self.target_not_in_bbox_cnt += 1
+            print("Target is not inside current bbox!")
             return [self.position, None, (0, 0)]
 
+        self.target_not_in_bbox_cnt = 0 # reset counter
         dy = np.mean(max_pos[0]) - gi.shape[0] / 2
         dx = np.mean(max_pos[1]) - gi.shape[1] / 2
         features_displacement = (int(dx), int(dy))
@@ -562,7 +571,7 @@ class DeepMosse:
         Returns:
             None
         """
-        if not self.target_lost:
+        if not self.target_not_in_bbox:
             xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
             fftxs = np.fft.fft(xs, axis=0)
             self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
@@ -590,7 +599,7 @@ class DeepMosse:
         clip_xmax = np.clip(self.position[0] + self.position[2], 0, self.frame_shape[1])
         clip_ymax = np.clip(self.position[1] + self.position[3], 0, self.frame_shape[0])
         if clip_xmax-clip_xmin == 0 or clip_ymax-clip_ymin == 0:
-            self.target_lost = True
+            self.target_not_in_bbox = True
         # self.clip_pos = self.clip_pos.astype(np.int64)
 
 
@@ -602,11 +611,9 @@ class DeepMosse:
             # self.update_position(response)
             self.check_position()
 
-            if not self.target_lost:
+            if not self.target_not_in_bbox:
                 self.update(image)
             self.current_frame += 1
-        
-        self.target_lost = False
 
         return [int(el) for el in self.position]
         

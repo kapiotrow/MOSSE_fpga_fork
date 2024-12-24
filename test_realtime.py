@@ -56,6 +56,8 @@ class Cam(object):
                 tracker_out = Int32MultiArray()
                 tracker_out.data = [self.dx, self.dy]
                 self.tracker_output_pub.publish(tracker_out)
+        elif self.tracker.target_lost:
+            self.tracker = None
         else:
             position = self.tracker.track(self.frame)
             position = [round(x) for x in position]
