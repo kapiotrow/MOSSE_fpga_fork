@@ -123,6 +123,7 @@ class DeepMosse:
         self.initialize(init_frame, init_position)
         self.current_frame = 1
 
+        # -- DSST init
         self.base_target_sz = np.array([init_position[3], init_position[2]])
         self.nScales = self.args.nScales #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
@@ -145,6 +146,8 @@ class DeepMosse:
         self.scale_model_factor = 1
         self.scale_model_sz = np.floor(self.base_target_sz * self.scale_model_factor).astype(int)
         self.initialize_scale(init_frame, init_position)
+
+        # -- handling loss of target
         self.min_psr = 8.7
         self.current_psr = self.min_psr + 1
         self.target_lost = False
@@ -154,6 +157,20 @@ class DeepMosse:
 
     #bbox: [xmin, ymin, w, h]
     def crop_search_window(self, bbox, frame, scale=1, debug='test', scale_idx=0, ignore_buffering=False):
+        """
+        Get convolutional features of the ROI.
+
+        Args:
+            bbox: [xmin, ymin, width, height] of the MOSSE translation filter
+            frame: current frame
+            scale: current scale factor
+            debug: 
+            scale_idx: 
+            ignore_buffering: 
+        
+        Returns:
+            window: convolutional features of the ROI
+        """
         
         xmin, ymin, width, height = bbox
         # print('bbox:', bbox)
@@ -266,18 +283,27 @@ class DeepMosse:
             im_patch = frame[ys[0]:ys[-1], xs[0]:xs[-1], :]
             im_patch_resized = cv2.resize(im_patch, [scale_model_sz[1], scale_model_sz[0]], interpolation=cv2.INTER_LINEAR)
             #temp = self.extract_features(im_patch_resized)
-            temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY)
+            temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY) # use image in grayscale
 
             if s == 0:
                 out = np.zeros((temp.size, self.nScales))
 
-            out[:, s] = temp.flatten('F') # flatten the extracted patch features into a column vector
+            out[:, s] = temp.flatten('F') # flatten the extracted patch features into a column vector, pack into matrix
 
         return out
 
 
     def extract_features(self, window):
+        """
+        Get convolutional features of the ROI.
 
+        Args:
+            window: ROI
+        
+        Returns:
+            window: feature map of ROI.
+        """
+        
         if self.args.deep:
             # print(window[:, :, 0])
             # print(window[:, :, 1])
@@ -298,8 +324,20 @@ class DeepMosse:
         return window
 
 
-    def initialize(self, init_frame, init_position):
-       
+    def initialize(self, init_frame, init_position) -> None:
+        """
+        Initialize MOSSE filter.
+
+        Get the desire, 2D gaussian-shaped output, pre-train the MOSSE filter.
+
+        Args:
+            init_frame: first frame of the stream
+            init_position: initial target position provided externally
+
+        Returns:
+            None
+        """
+
         self.frame_shape = init_frame.shape
         init_gt = init_position
         init_gt = np.array(init_gt).astype(np.int64)
@@ -352,6 +390,8 @@ class DeepMosse:
         """
         Initialize the correlation filter used for scale estimation.
 
+        Get the training sample xs and train the DSST correlation filter.
+
         Args:
             init_frame: first frame of the stream
             init_position: tracked object's position
@@ -359,16 +399,31 @@ class DeepMosse:
         Returns:
             None
         """
+
         xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
         self.sf_num = np.multiply(fftxs, np.conjugate(self.fftys))
         self.sf_denum = np.multiply(fftxs, np.conjugate(fftxs) + self.args.lambd)
         self.sf_denum = np.sum(self.sf_denum, axis=0)
-        self.Yi = np.divide(self.sf_num, self.sf_denum) # correlation filter for DSST
+        self.Yi = np.divide(self.sf_num, self.sf_denum) # DSST correlation filter
         self.target_sz = np.ceil(self.base_target_sz)
 
 
     def predict(self, frame, position, scale=1, scale_idx=None):
+        """
+        Predict the current target location.
+
+        Calculates the correlation between the MOSSE filter and the current frame.
+
+        Args:
+            frame: current frame
+            position: previous target position
+            scale: current scale factor
+            scale_idx:
+
+        Returns:
+            gi: real part of IFFT of MOSSE filter response
+        """
 
         self.target_not_in_bbox = False # reset
         fi = self.crop_search_window(position, frame, scale, debug='predict', scale_idx=scale_idx)
@@ -415,8 +470,9 @@ class DeepMosse:
             pos: last estimated position of the tracked object
 
         Returns:
-            None
+            scale_response: real part of IFFT of DSST filter response
         """
+
         xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
         scale_response = np.multiply(np.conjugate(self.Yi), fftxs)
@@ -444,6 +500,7 @@ class DeepMosse:
         Returns:
             None
         """
+
         if DSST: # use DSST correlation filter
             response = self.predict(frame, self.position, self.currentScaleFactor) # first find the target location
             self.position, max_response, self.best_features_displacement = self.update_position(response, self.currentScaleFactor)
@@ -472,8 +529,17 @@ class DeepMosse:
             print('position:', self.position)
 
 
-    def update(self, frame):
+    def update(self, frame) -> None:
+        """
+        Update the numerator and denominator of the MOSSE filter; update the filter itself.
 
+        Args:
+            frme: current frame
+
+        Returns:
+            None
+        """
+        
         if self.buffer_features_for_update:
             # window = self.buffered_windows[self.best_scale_idx]
             # x_win = self.args.buffered_padding*self.stride + self.best_features_displacement[0]*self.stride
@@ -522,6 +588,20 @@ class DeepMosse:
 
 
     def update_position(self, spatial_response, scale=1):
+        """
+        Update the current estimated target position.
+
+        Checks the current PSR and updates the estimated target position if the PSR
+        is greater than minimum.
+
+        Args:
+            spatial_response: response of the MOSSE filter
+            scale: current scale factor
+        
+        Returns:
+            new_position, max_vale, feature_displacement: new estimated target position,
+            maximum correlation value, feature displacement
+        """
 
         if self.target_not_in_bbox_cnt > 20:
             self.target_lost = True
@@ -571,12 +651,15 @@ class DeepMosse:
         Returns:
             None
         """
+
         if not self.target_not_in_bbox:
             xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
             fftxs = np.fft.fft(xs, axis=0)
+
             self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
             self.best_scale_idx = np.argmax(scale_response)
-            # print("current scale factor: ", self.currentScaleFactor)
+            # print("current scale factor: ", self.currentScaleFactor)s
+            
             if self.currentScaleFactor > self.max_scale_factor: self.currentScaleFactor = self.max_scale_factor
             elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
 
@@ -586,13 +669,17 @@ class DeepMosse:
             self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
             self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
 
-            self.Yi = np.divide(self.sf_num, self.sf_denum)
+            self.Yi = np.divide(self.sf_num, self.sf_denum) # update filter
 
             self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
 
 
 
     def check_position(self):
+        """
+        
+        """
+
         # # trying to get the clipped position [xmin, ymin, xmax, ymax]
         clip_xmin = np.clip(self.position[0], 0, self.frame_shape[1])
         clip_ymin = np.clip(self.position[1], 0, self.frame_shape[0])
@@ -604,7 +691,17 @@ class DeepMosse:
 
 
     def track(self, image, DSST=True):
-      
+        """
+        Track object.
+
+        Args:
+            image: current frame
+            DSST: true if DSST is used
+
+        Returns:
+            [int(el) for el in self.position]: predicted target location
+        """
+        
         if not self.target_lost:
             # response = self.predict(image, self.position)
             self.predict_multiscale(image, DSST)
@@ -620,6 +717,17 @@ class DeepMosse:
 
     # pre train the filter on the first frame...
     def _pre_training(self, init_gt, init_frame, G):
+        """
+        Pre-train the MOSSE filter.
+
+        Args:
+            init_gt: initial target bounding box
+            init_frame: first frame of the stream
+            G: desired output
+
+        Returns:
+            Ai, Bi: numerator and denominator of the MOSSE filter
+        """
 
         template = self.crop_search_window(init_gt, init_frame)
         # quant(template, 'Mul_0_param0.npy')
@@ -667,6 +775,16 @@ class DeepMosse:
 
     # pre-processing the image...
     def pre_process(self, img):
+        """
+        Pre-process the image by applying 2D Hann window to it.
+
+        Args:
+            img: frame to be pre-processed
+
+        Returns:
+            img: pre-processed frame
+        """
+
         # get the size of the img...
         # xd, _ = pad_img(img, padded_size, pad_type=self.pad_type)
         # cv2.imshow('padded', xd.astype(np.uint8))
@@ -692,7 +810,9 @@ class DeepMosse:
 
 
     def cnn_preprocess(self, data):
-
+        """
+        
+        """
         # result = data.copy()
         # result.resize(1, data.shape[0], data.shape[1], data.shape[2])
         # result = result.transpose(0, 3, 1, 2)
@@ -716,7 +836,15 @@ class DeepMosse:
 
     # get the ground-truth gaussian reponse...
     def _get_gauss_response(self, size):
-       
+        """
+        Calculate the 2D gaussian-shaped response for MOSSE filter.
+
+        Args:
+            size: size of the gauss-shaped response
+
+        Returns:
+            response: 2D gaussian-shaped response
+        """
         xx, yy = np.meshgrid(np.arange(size), np.arange(size))
         # get the center of the object...
         center_x = size // 2
