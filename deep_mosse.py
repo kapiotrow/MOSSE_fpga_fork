@@ -127,11 +127,12 @@ class DeepMosse:
         self.base_target_sz = np.array([init_position[3], init_position[2]])
         self.nScales = self.args.nScales #number of scales (DSST)
         self.ss = np.arange(1, self.nScales+1) - np.ceil(self.nScales/2)
-        self.scale_sigma = self.args.scale_sigma_factor
-        self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.scale_sigma, 2)) \
-                  * 1/np.sqrt(2*np.pi * np.power(self.scale_sigma, 2)) # desired output - gaussian-shaped peak
+
+        self.ys = np.exp(-0.5 * np.power(self.ss, 2) / np.power(self.args.scale_sigma_factor, 2)) \
+                  * 1/np.sqrt(2*np.pi * np.power(self.args.scale_sigma_factor, 2)) # desired output - gaussian-shaped peak
         self.fftys = np.fft.fft(np.reshape(self.ys, (1, self.nScales)), axis=0)
-        self.currentScaleFactor = 1
+
+        self.currentScaleFactor = 1 # set initial scale factor to 1
         self.ss = np.arange(1, self.nScales+1)
         self.scaleFactors = np.power(self.args.scale_step, (np.ceil(self.nScales/2) - self.ss))
         self.min_scale_factor = 0.7
