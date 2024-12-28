@@ -148,8 +148,8 @@ class DeepMosse:
         self.scale_model_sz = np.floor(self.base_target_sz * self.scale_model_factor).astype(int)
         self.initialize_scale(init_frame, init_position)
 
-        # -- handling loss of target
-        self.min_psr = 8.7
+        # -- handling target loss
+        self.min_psr = 8
         self.current_psr = self.min_psr + 1
         self.target_lost = False
         self.target_not_in_bbox = False
@@ -246,7 +246,7 @@ class DeepMosse:
         return window
     
 
-    def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_model_sz):
+    def crop_scale_search_window(self, pos, frame, base_target_sz, scaleFactors, scale_window, scale_model_sz):
         """
         Extract target sample.
 
@@ -283,8 +283,10 @@ class DeepMosse:
 
             im_patch = frame[ys[0]:ys[-1], xs[0]:xs[-1], :]
             im_patch_resized = cv2.resize(im_patch, [scale_model_sz[1], scale_model_sz[0]], interpolation=cv2.INTER_LINEAR)
-            #temp = self.extract_features(im_patch_resized)
-            temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY) # use image in grayscale
+            temp = self.extract_features(im_patch_resized)
+            # print(temp.shape)
+            # temp = cv2.cvtColor(im_patch_resized, cv2.COLOR_RGB2GRAY) # use image in grayscale
+            temp = im_patch_resized[int(len(im_patch_resized[0])/2), :, :]
 
             if s == 0:
                 out = np.zeros((temp.size, self.nScales))
@@ -401,12 +403,12 @@ class DeepMosse:
             None
         """
 
-        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, self.scale_model_sz)
+        xs = self.crop_scale_search_window(init_position, init_frame, self.base_target_sz, self.scaleFactors, self.scale_window, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
         self.sf_num = np.multiply(fftxs, np.conjugate(self.fftys))
-        self.sf_denum = np.multiply(fftxs, np.conjugate(fftxs) + self.args.lambd)
+        self.sf_denum = np.multiply(fftxs, np.conjugate(fftxs))
         self.sf_denum = np.sum(self.sf_denum, axis=0)
-        self.Yi = np.divide(self.sf_num, self.sf_denum) # DSST correlation filter
+        self.Yi = np.divide(self.sf_num, self.sf_denum + self.args.lambd) # DSST correlation filter
         self.target_sz = np.ceil(self.base_target_sz)
 
 
@@ -474,10 +476,10 @@ class DeepMosse:
             scale_response: real part of IFFT of DSST filter response
         """
 
-        xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
+        xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_window, self.scale_model_sz)
         fftxs = np.fft.fft(xs, axis=0)
         scale_response = np.multiply(np.conjugate(self.Yi), fftxs)
-        scale_response = np.sum(scale_response, axis = 0) # sum the columns
+        scale_response = np.sum(scale_response, axis=0) # sum the columns
         scale_response = np.real(np.fft.ifft(np.reshape(scale_response, (1, self.nScales)), axis=0))
 
         # print("scale_response: ", scale_response, end = "\t")
@@ -604,7 +606,7 @@ class DeepMosse:
             maximum correlation value, feature displacement
         """
 
-        if self.target_not_in_bbox_cnt > 20:
+        if self.target_not_in_bbox_cnt > 80:
             self.target_lost = True
             return [self.position, None, (0, 0)]
         gi = spatial_response
@@ -654,7 +656,7 @@ class DeepMosse:
         """
 
         if not self.target_not_in_bbox:
-            xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_model_sz)
+            xs = self.crop_scale_search_window(pos, frame, self.target_sz, self.scaleFactors, self.scale_window, self.scale_model_sz)
             fftxs = np.fft.fft(xs, axis=0)
 
             self.currentScaleFactor = self.scaleFactors[np.argmax(scale_response)] # current target scale is obtained by finding the max correlation
@@ -665,12 +667,12 @@ class DeepMosse:
             elif self.currentScaleFactor < self.min_scale_factor: self.currentScaleFactor = self.min_scale_factor
 
             new_sf_num = np.multiply(np.conjugate(self.fftys), fftxs)
-            new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs + self.args.lambd), axis=0)
+            new_sf_den = np.sum(np.multiply(np.conjugate(fftxs), fftxs), axis=0)
 
             self.sf_num = (1 - self.args.lr_scale) * self.sf_num + self.args.lr_scale * new_sf_num
             self.sf_denum = (1 - self.args.lr_scale) * self.sf_denum + self.args.lr_scale * new_sf_den
 
-            self.Yi = np.divide(self.sf_num, self.sf_denum) # update filter
+            self.Yi = np.divide(self.sf_num, self.sf_denum + self.args.lambd) # update filter
 
             self.target_sz = np.ceil(self.target_sz * self.currentScaleFactor)
 
