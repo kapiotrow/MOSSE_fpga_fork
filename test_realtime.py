@@ -45,8 +45,8 @@ class Cam(object):
             # init_bbox.show()
             # init_bbox = init_bbox.boxes.xywh.cpu()
             # init_bbox = init_bbox[0]
-            init_bbox = cv2.selectROI("select the target", self.frame, showCrosshair=False, fromCenter=False)
-            cv2.waitKey(5000)
+            init_bbox = cv2.selectROI("select the target", self.frame, showCrosshair=True, fromCenter=False)
+            cv2.waitKey(2000)
             if init_bbox != None:
                 self.tracker = DeepMosse(self.frame, init_bbox, config=self.config)
                 lost_msg = Bool()
