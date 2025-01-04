@@ -267,7 +267,7 @@ def random_warp(img, i='0'):
     # cv2.imshow(i+' sample', img_resized)
     if channels == 1:
         img_resized = np.expand_dims(img_resized, axis=0)
-    # print('shape:', img_resized.shape)
+    img_resized = img_resized.transpose(2, 0, 1)
     # rotate the image...
     # matrix_rot = cv2.getRotationMatrix2D((img.shape[1]/2, img.shape[0]/2), r, 1)
     # img_rot = cv2.warpAffine(np.uint8(img * 255), matrix_rot, (img.shape[1], img.shape[0]))

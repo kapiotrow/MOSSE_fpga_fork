@@ -15,7 +15,9 @@
     "num_scales": 5,
     "scale_factor": 1.02,
     "lr_scale": 0.025,
-    "scale_sigma_factor": 14,
+    "scale_sigma_factor": 11,
     "scale_step": 1.02,
-    "nScales": 11
+    "nScales": 11,
+    "num_pretrain": 20,
+    "rotate": true
 }

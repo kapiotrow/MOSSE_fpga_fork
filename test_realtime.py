@@ -22,6 +22,7 @@ class Cam(object):
         self.dx = 0
         self.dy = 0
         self.tracker_output_pub = rospy.Publisher("/iris_control/mosse_output", Int32MultiArray, queue_size=10)
+        self.tracker_target_lost_pub = rospy.Publisher("/iris_control/target_lost", Bool)
         self.bridge = CvBridge()
         self.fileno = 0
         self.config = None
@@ -34,31 +35,33 @@ class Cam(object):
         
 
     def camera_sub_callback(self, msg: Image):
-        # img = np.array(list(msg.data)).astype(np.uint8)
-        # self.frame = np.reshape(img, (msg.height, msg.width, 3))
-        # frame_gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
         self.frame = self.bridge.imgmsg_to_cv2(msg, "passthrough")
         self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
-        frame_gray = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
-        if self.tracker==None:
-            results = self.modelYOLO(self.frame)
-            init_bbox = results[0]
-            print(init_bbox.names[0])
-            init_bbox.show()
-            init_bbox = init_bbox.boxes.xywh.cpu()
-            init_bbox = init_bbox[0]
+
+        if self.tracker==None: # no tracker, try to init
+            # results = self.modelYOLO(self.frame)
+            # init_bbox = results[0]
+            # print(init_bbox.names[0])
+            # init_bbox.show()
+            # init_bbox = init_bbox.boxes.xywh.cpu()
+            # init_bbox = init_bbox[0]
+            init_bbox = cv2.selectROI("select the target", self.frame, showCrosshair=True, fromCenter=False)
+            cv2.waitKey(2000)
             if init_bbox != None:
-                self.tracker = DeepMosse(self.frame, [int(init_bbox[0] - (init_bbox[2]/2)), int(init_bbox[1] - (init_bbox[3]/2)), int(init_bbox[2]), int(init_bbox[3])], 
-                                        config=self.config)
-            else:
-                self.dx = 10
-                self.dy = 0
-                tracker_out = Int32MultiArray()
-                tracker_out.data = [self.dx, self.dy]
-                self.tracker_output_pub.publish(tracker_out)
-        elif self.tracker.target_lost:
+                self.tracker = DeepMosse(self.frame, init_bbox, config=self.config)
+                lost_msg = Bool()
+                lost_msg.data = False
+                self.tracker_target_lost_pub.publish(lost_msg)
+            # else: # no bbox was provided
+            #     lost_msg = Bool()
+            #     lost_msg.data = False
+            #     self.tracker_target_lost_pub.publish(lost_msg)
+        elif self.tracker.target_lost: # the target was lost, tracker needs to be re-init
             self.tracker = None
-        else:
+            lost_msg = Bool()
+            lost_msg.data = True
+            self.tracker_target_lost_pub.publish(lost_msg)
+        else: # track
             position = self.tracker.track(self.frame)
             position = [round(x) for x in position]
             self.dx = int(100*(position[0]+(position[2]/2))/self.frame.shape[1])
